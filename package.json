@@ -5,13 +5,18 @@
   "license": "MIT",
   "type": "module",
   "description": "LINE and Discord bridge for Your dot, cloud inbox and local Codex",
-  "engines": {"node": ">=22.13.0"},
-  "bin": {"codex-line-bridge": "./src/cli.mjs"},
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "codex-line-bridge": "./src/cli.mjs"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/cli.mjs start",
     "doctor": "node --env-file-if-exists=.env src/cli.mjs doctor",
     "test": "node --test tests/*.test.mjs",
     "check": "node scripts/check.mjs",
-    "package:cloud": "node scripts/package-cloud.mjs"
+    "package:cloud": "node scripts/package-cloud.mjs",
+    "test:codex-e2e": "node scripts/codex-e2e.mjs"
   }
 }
