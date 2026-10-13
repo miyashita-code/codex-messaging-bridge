@@ -34,6 +34,16 @@ complete; identify only the specific steps that require my participation.
 
 LINEのみなら「LINEとDiscord」を「LINE」に変えます。Discordのみなら `--channel discord` を使います。既存Botがある場合はその旨を伝えます。tokenやpasswordを依頼文へ貼る必要はありません。
 
+## Cloud computerを開く入口
+
+local Codexから始める場合、通常のChatGPT web画面を操作できる許可済みbrowser toolがあれば、利用者にcloud画面を開くよう依頼する前に、その入口を確認します。native appが保護対象として操作を拒否された場合、別のnative driverで同じappを操作して回避しません。通常のwebサイトを操作する独立した許可済み経路だけを使います。
+
+1. [ChatGPT](https://chatgpt.com/)を対応browserで開きます。Codex appの `open_in_codex` が実在する場合は、`target: { type: "browser", url: "https://chatgpt.com/" }` を使えます。呼び出し元chatが非表示で `queued` になった場合、対応する `navigate_to_codex_page` でそのchatを表示し、開いたbrowserを確認します。
+2. browser toolの文書にある操作で、読み込み後のaccount画面を確認します。最初のloadingやsign-in表示だけで未ログインと断定せず、状態を再確認します。ログイン済みであることや他browserから認証を引き継ぐことも推測しません。
+3. 画面上の **Your dot** から利用者の対象dotを選び、profile → **Computers → Open computer → Take over** と進みます。表示されていないdeep linkや内部APIは推測しません。cookieやloginファイルをコピーしません。本人のsign-in等が必要になった場合は、そのtoolのprivate handoff規則に従います。
+
+profileからcloud computerを開き、`Take over` で操作し、作業をdotへ戻すときに `Return control` を選ぶ流れは公式に案内されています。画面を開けたことは、Node・外向き通信・常駐・実メッセージ往復の成功を意味しません。引き続き以下の実行条件を確認します。[Computers and apps](https://learn.chatgpt.com/docs/dots/computers-and-apps)
+
 ## 1. Cloudで計画とprivate設定を準備する
 
 cloud computerでこのrepoを取得し、Node.js 22.13以降を確認します。対応するshellやファイル操作が利用できることを、実際のtoolで確認します。
