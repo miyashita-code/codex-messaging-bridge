@@ -75,6 +75,8 @@ Your dotの記憶・接続済みアプリ・作業委譲はYour dot側で管理�
 
 DMは既定で `dmPolicy: "pairing"`、グループは `groupPolicy: "allowlist"` です。DM承認とグループの送信者許可は独立しています。Discordサーバーは `guilds`、LINEグループは `groupAllowFrom` / `groups` で許可します。
 
+ペアリングは初回接続の承認です。承認済みの接続は、明示的に取り消すまで保存されます。承認待ちコードの期限をなくす場合は、LINE / Discordの `pairingCodeTtlMs` を `null` にします。省略時の1時間は承認待ちコードの有効時間です。任意の正の整数を指定すると、そのミリ秒数だけ有効になります。設定方法は[LINE](docs/line-setup.md#access-control)・[Discord](docs/discord-setup.md#guild-workspace)の案内を参照してください。
+
 ```bash
 ./bin/codex-line-bridge gateway status
 ./bin/codex-line-bridge channels status --probe
@@ -99,7 +101,9 @@ CODEX_E2E=1 npm run test:codex-e2e
 
 通常のテストはサービス認証情報を使わず、モックのLINE / Discord / MCP経路を検証します。`CODEX_SMOKE` はCodexログイン接続のみ、`CODEX_E2E` は自分のログインで実際に2回推論し、ペアリング・重複抑止・再起動後の会話再開まで検査します。E2EのDiscord通信は模擬で、一時的なブリッジデータは削除します。Codex側には検査用の会話が残ります。実Bot・Your dotとの往復、cloud computerの継続稼働はそれぞれの実環境で確認します。Node.js 22 / 24 / 26で検査するGitHub Actions設定例は `deploy/github-actions-ci.yml.example` にあります。利用する場合は `.github/workflows/ci.yml` にコピーします。このリポジトリでは、現在のGitHub CLI認証にworkflow書き込み権限がないためCIを有効化していません。
 
-2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。これは個人用Codex経路の実通信検証です。LINE、Your dot MCP Events、Your dotのcloud computerでの実通信・継続稼働は未検証です。
+2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。
+
+2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。Your dotへの実接続、MCP EventsによるYour dotとの往復、cloud computerでの実通信・継続稼働は未検証です。通常テストは164件成功・1件スキップです。[変更履歴](CHANGELOG.md)
 
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
@@ -122,7 +126,11 @@ Send the bot a DM, approve its pairing code in another terminal, then send a sec
 ./bin/codex-line-bridge pairing approve discord <CODE>
 ```
 
+Approved connections remain stored until explicitly revoked. Set the channel or account's `pairingCodeTtlMs` to `null` for pending pairing codes without expiry, or to a positive integer duration in milliseconds. The omitted one-hour default applies to unapproved codes.
+
 Discord Gateway needs an active process but no public webhook or domain. For **Your dot without a public endpoint**, keep `backend: "inbox"`; your dot reads and replies through the CLI on the same computer. This inbox mode does not wake your dot when a message arrives. For **Your dot MCP Events**, use `backend: "dot"`, an HTTPS MCP endpoint, OAuth and event subscriptions. LINE always needs an HTTPS webhook receiver. Continuous operation on your dot's cloud computer has not been verified.
+
+Live Discord and LINE exchanges with personal Codex on macOS have passed. Discord testing includes mentions, DM pairing and replies, and conversation continuity after switching to LaunchAgent. LINE testing includes pairing, an actual user message through Codex to a reply in the same conversation, and retention of approval and conversation context after restarting the gateway with no-expiry codes configured. Your dot MCP and cloud computer live connections remain unverified. See the [changelog](CHANGELOG.md).
 
 See the [installation and profile guide](docs/install.md#english-installation-guide), [Discord setup](docs/discord-setup.md), [LINE setup](docs/line-setup.md) and [Your dot integration](docs/dot-integration.md). Each user supplies their own credentials. Local Codex app-server login is for local / open-source use, subject to [OpenAI's authentication conditions](https://learn.chatgpt.com/docs/app-server).
 

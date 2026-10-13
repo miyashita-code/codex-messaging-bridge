@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DiscordClient } from './discord.mjs';
 import { discordAdmitted,discordAddressed,discordSessionKey,stripDiscordMentions } from './discord-policy.mjs';
 import { declineRequest } from './codex.mjs';
+import { pairingCodeExpiryNotice } from './pairing.mjs';
 
 const namespace = id => `discord:${id}`;
 const messageId = (account,message) => `discord:${account.accountId}:message:${message.id}`;
@@ -74,8 +75,8 @@ export class DiscordBridge {
   }
   async challenge(a,m) {
     if(m.guild_id || m.channel?.type!==1 || a.dmPolicy!=='pairing' || a.dm?.enabled===false || m.author?.bot || m.webhook_id)return;
-    const p=this.store.pairing(namespace(a.accountId),m.author.id);
-    if(p.created)await this.simple(a,m,`AI秘書の接続承認が必要です。\nペアリングコード: ${p.code}\n管理者がGatewayで承認してください:\ncodex-line-bridge pairing approve discord ${p.code}\n有効期限は1時間です。承認後もう一度送信してください。`);
+    const p=this.store.pairing(namespace(a.accountId),m.author.id,a.pairingCodeTtlMs);
+    if(p.created)await this.simple(a,m,`AI秘書の接続承認が必要です。\nペアリングコード: ${p.code}\n管理者がGatewayで承認してください:\ncodex-line-bridge pairing approve discord ${p.code}\n${pairingCodeExpiryNotice(a.pairingCodeTtlMs)}承認後もう一度送信してください。`);
   }
   async simple(a,m,text,native) {
     const body=native || splitDiscordText(text,a.textChunkLimit,a.maxLinesPerMessage).map(content=>({content}));

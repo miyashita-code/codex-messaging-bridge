@@ -43,6 +43,19 @@ test('Discord pairing is namespaced and group DM or missing channel metadata nev
     f.store.approve(code.code);const id=await processOne(f,incoming('admitted'));assert.equal(f.bridge.readMessage(id).text,'admitted');f.store.revoke('discord:default',USER);assert.throws(()=>f.bridge.readMessage(id),/available/);
   }finally{f.cleanup();}
 });
+test('Discord pairing notices and stored expiry follow account TTL without repeating pending challenges',async(t)=>{
+  const now=1700000000000;t.mock.method(Date,'now',()=>now);
+  for(const [ttl,notice] of [[undefined,'発行から1時間'],[90000,'発行から90秒'],[1500,'発行から1500ミリ秒'],[null,'有効期限はありません']]){
+    const f=fixture({discord:{dmPolicy:'pairing',allowFrom:[],...(ttl===undefined?{}:{pairingCodeTtlMs:ttl})}});
+    try{
+      await processOne(f,incoming('pair me'));await processOne(f,incoming('pair me again'));
+      assert.equal(f.sent.length,1);const text=f.sent[0].messages[0].content;assert.ok(text.includes(notice));
+      if(ttl===null)assert.ok(!text.includes('1時間'));
+      const pending=f.store.db.prepare('SELECT account_id,expires FROM pairings').get();assert.equal(pending.account_id,'discord:default');
+      assert.equal(pending.expires,ttl===null?null:now+(ttl ?? 3600000));
+    }finally{f.cleanup();}
+  }
+});
 test('guild messages require allowed channel/sender and an explicit bot mention or reply',async()=>{
   const f=fixture({discord:{allowFrom:[],guilds:{[GUILD]:{users:[USER],channels:{[CHANNEL]:{allow:true}}}}}});try{
     const base={guild_id:GUILD,channel:{id:CHANNEL,type:0}};

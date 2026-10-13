@@ -8,6 +8,7 @@
       "enabled": true,
       "token": "${DISCORD_BOT_TOKEN}",
       "dmPolicy": "pairing",
+      "pairingCodeTtlMs": 3600000,
       "groupPolicy": "allowlist",
       "guilds": {}
     }

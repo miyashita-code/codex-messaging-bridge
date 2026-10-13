@@ -1,6 +1,7 @@
 import { readFileSync, lstatSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { normalizeDiscord } from './discord-policy.mjs';
+import { normalizePairingCodeTtlMs } from './pairing.mjs';
 
 function fileSecret(path, base) {
   if (!path) return '';
@@ -54,6 +55,7 @@ export function normalizeConfig(raw, {base=process.cwd(),env=process.env}={}) {
     a.channelAccessToken = credentials.channelAccessToken || fileSecret(credentials.tokenFile,base) || (id==='default' ? env.LINE_CHANNEL_ACCESS_TOKEN : '') || '';
     a.channelSecret = credentials.channelSecret || fileSecret(credentials.secretFile,base) || (id==='default' ? env.LINE_CHANNEL_SECRET : '') || '';
     a.dmPolicy ??= 'pairing'; a.groupPolicy ??= 'allowlist';
+    a.pairingCodeTtlMs = normalizePairingCodeTtlMs(a.pairingCodeTtlMs);
     a.mediaMaxMb ??= config.mediaMaxMb;
     if(!Number.isInteger(a.mediaMaxMb) || a.mediaMaxMb<1 || a.mediaMaxMb>50)throw new Error('Invalid LINE mediaMaxMb');
     a.allowFrom ??= []; a.groupAllowFrom ??= [];

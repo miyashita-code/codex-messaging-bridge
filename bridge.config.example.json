@@ -21,6 +21,7 @@
       "enabled": true,
       "webhookPath": "/line/webhook",
       "dmPolicy": "pairing",
+      "pairingCodeTtlMs": 3600000,
       "allowFrom": [],
       "groupPolicy": "allowlist",
       "groupAllowFrom": [],

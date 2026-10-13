@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { LineClient, splitText } from './line.mjs';
 import { renderMarkdown } from './format.mjs';
 import { admitted, addressed, stripMentions, groupConfig, conversationId, sessionKey, senderAllowed } from './policy.mjs';
+import { pairingCodeExpiryNotice } from './pairing.mjs';
 
 const idFor = (account,event) => `${account}:${event.message?.id ? `message:${event.message.id}` : `event:${event.webhookEventId}`}`;
 const retryId = key => {const h=createHash('sha256').update(key).digest('hex');return `${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
@@ -73,8 +74,8 @@ export class Bridge {
     if(!['message','postback'].includes(event.type)) return;
     if(!this.allowed(a,source)) {
       if(source.type==='user' && a.dmPolicy==='pairing') {
-        const pairing=this.store.pairing(a.accountId,source.userId);
-        if(pairing.created) await this.simple(a,event,`AI秘書の接続承認が必要です。\nペアリングコード: ${pairing.code}\n管理者がGatewayで次を実行してください:\ncodex-line-bridge pairing approve line ${pairing.code}\n有効期限は1時間です。承認後、もう一度送信してください。`);
+        const pairing=this.store.pairing(a.accountId,source.userId,a.pairingCodeTtlMs);
+        if(pairing.created) await this.simple(a,event,`AI秘書の接続承認が必要です。\nペアリングコード: ${pairing.code}\n管理者がGatewayで次を実行してください:\ncodex-line-bridge pairing approve line ${pairing.code}\n${pairingCodeExpiryNotice(a.pairingCodeTtlMs)}承認後、もう一度送信してください。`);
       }return;
     }
     if(event.type==='postback') {await this.answer(a,event,event.postback?.data || '');return;}

@@ -181,6 +181,7 @@ Botをメンションしたメッセージ、またはBotの発言に返信し�
 | 設定 | 動作 |
 | --- | --- |
 | `dmPolicy` | `pairing` / `allowlist` / `open` / `disabled`。標準は `pairing` |
+| `pairingCodeTtlMs` | コードの有効時間（正の整数、ミリ秒）。省略時は `3600000`（1時間）。`null` で有効期限なし |
 | `allowFrom` | DMの送信者ID。`discord:ID`、`user:ID`、ユーザーメンションも使用可能。`open` では `["*"]` が必要 |
 | `dm.enabled` | `false` でDMを停止 |
 | `dm.groupEnabled` / `dm.groupChannels` | グループDMは標準で停止。明示的に有効化し、必要ならチャンネルIDで限定。DMの送信者許可も適用 |
@@ -192,6 +193,8 @@ Botをメンションしたメッセージ、またはBotの発言に返信し�
 | `mediaMaxMb` | 添付サイズ上限。標準100MB。Discord側の上限・権限も適用 |
 
 複数Botは `channels.discord.accounts.<accountId>` ごとにTokenと設定を追加します。`DISCORD_BOT_TOKEN` はdefault accountにだけ適用され、名前付きaccountは別Tokenを指定します。設定を変更した後はGatewayを再起動します。
+
+コードの有効期限をなくす場合は `channels.discord.pairingCodeTtlMs` を `null` にします。Botごとの `accounts.<accountId>.pairingCodeTtlMs` で上書きできます。変更は新しいコードに適用され、発行済みの未承認コードと期限は維持します。承認済みアクセスはコードの期限が過ぎても維持されます。
 
 Bot同士の連続応答には、account・チャンネル・相手Botごとの短時間制限を適用します。標準は60秒に20件、上限到達後は60秒停止です。`allowBots: false` ならBotからの呼び出し自体を停止できます。[OpenClawのBotループ対策](https://docs.openclaw.ai/channels/discord/troubleshooting#bot-to-bot-loops)
 

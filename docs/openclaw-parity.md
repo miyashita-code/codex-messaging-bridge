@@ -91,7 +91,9 @@ Source:
   in `allowFrom`. Unknown pairing senders receive a challenge and their message
   is not passed to the agent until the owner approves locally.
 - Codes are 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, expire after
-  1 hour, and pending challenges cap at 3. Repeated messages retain a pending
+  1 hour by default, and pending challenges cap at 3. The bridge's per-account
+  `pairingCodeTtlMs` extension accepts a positive millisecond duration or `null`
+  for no expiry. Repeated messages retain a pending
   code; only a newly created challenge sends the challenge notice.
 - Upstream owner commands: `openclaw pairing list line` and
   `openclaw pairing approve line <CODE>`. The approval persists an account-scoped

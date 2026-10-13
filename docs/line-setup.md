@@ -119,6 +119,7 @@ DMは `pairing` が標準です。初めての送信者にはペアリングコ�
 | 設定 | 値・動作 |
 | --- | --- |
 | `channels.line.dmPolicy` | `pairing` / `allowlist` / `open` / `disabled`。標準は `pairing` |
+| `channels.line.pairingCodeTtlMs` | コードの有効時間（正の整数、ミリ秒）。省略時は `3600000`（1時間）。`null` で有効期限なし |
 | `channels.line.allowFrom` | DMを許可するLINE user ID。`open` では `["*"]` が必要 |
 | `channels.line.groupPolicy` | `allowlist` / `open` / `disabled`。標準は `allowlist` |
 | `channels.line.groupAllowFrom` | グループを許可するLINE user ID。DMの許可とは独立 |
@@ -127,6 +128,8 @@ DMは `pairing` が標準です。初めての送信者にはペアリングコ�
 | `channels.line.groups.<groupId>.requireMention` | メンションがあるメッセージを受け付ける |
 
 `groupPolicy: "allowlist"` では、`groupAllowFrom` または個別の `allowFrom` を設定します。グループ側が空なら、DMを `open` にしてもグループのメッセージは受け付けません。
+
+コードの有効期限をなくす場合は `channels.line.pairingCodeTtlMs` を `null` にし、Gatewayを再起動します。複数accountでは `channels.line.accounts.<id>.pairingCodeTtlMs` で上書きできます。変更は新しく発行するコードに適用され、発行済みの未承認コードはコードと期限を維持します。承認済みのアクセスはコードの期限が過ぎても維持されます。
 
 `groups."*"` は各グループ・roomの共通設定です。個別設定は指定した項目だけを上書きします。Botの発言を引用した返信も呼び出しとして扱います。この動作を止める場合は、共通設定の `channels.defaults.implicitMentions.quotedBot` を `false` にします。
 

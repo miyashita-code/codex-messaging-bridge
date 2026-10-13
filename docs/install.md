@@ -134,6 +134,7 @@ codex login status
 
 - `.env`、`bridge.config.json`、`data/` はGitから除外しています。実際のToken / Secretを設定例に書かないでください。
 - グループやDiscordサーバーで使う場合は、DM承認とは別に送信者とグループを許可します。[LINE](line-setup.md#access-control) / [Discord](discord-setup.md#guild-workspace)の手順を参照してください。
+- ペアリングコードの期限をなくす場合は、対象の `channels.line.pairingCodeTtlMs` / `channels.discord.pairingCodeTtlMs` を `null` にします。省略時はOpenClaw互換の1時間です。設定は新しく発行するコードに適用し、承認済みアクセスは維持します。
 - `doctor --probe` は資格情報と実サービス接続を診断します。`gateway status` はローカルプロセスの存在を確認します。AI返信までの確認には承認後の実DMを送ります。
 - `gateway` の停止は `Ctrl+C`。更新・バックアップ前に停止し、SQLite本体と関連ファイルを一緒に保存します。更新後は `npm ci --ignore-scripts`、`npm test`、`npm run check` を実行して再起動します。
 - 同じ保存領域でGatewayを二重起動しません。起動中のGatewayに対して、別の端末からペアリング・受信箱のCLIを使えます。
@@ -152,6 +153,8 @@ Choose a profile:
 | Personal Codex + LINE | Run `init` | Set `backend: codex`; sign in to Codex | HTTPS LINE webhook and Codex access |
 
 Follow [Discord setup](discord-setup.md) or [LINE setup](line-setup.md) to create your own bot. `channels add --channel discord` / `line` prompts for credentials without displaying them. Run `doctor --probe`, then `gateway`. Send your first DM and approve its code with `pairing approve discord <CODE>` or `pairing approve line <CODE>` in another terminal. Send a second DM to verify the reply.
+
+Set the channel or account's `pairingCodeTtlMs` to `null` for pairing codes without expiry, or to a positive integer duration in milliseconds. Omission keeps the OpenClaw-compatible one-hour default. The setting affects newly issued codes; existing pending challenges and approved access are preserved.
 
 In the **inbox** profile, use `inbox list --channel discord`, `inbox read <MESSAGE_ID>` and `inbox reply <MESSAGE_ID> --text "Hello" --idempotency-key <REPLY_KEY>`. Use one stable key per reply, including retries. This profile does not wake your dot automatically. Continuous daemon operation on your dot's cloud computer is unverified; see [cloud computer requirements](cloud-computer.md).
 

@@ -70,6 +70,18 @@ test('pairing creates one eight-character challenge, caps pending, expires and r
     s.db.prepare('UPDATE pairings SET expires=0').run();assert.equal(s.approve(s.db.prepare('SELECT code FROM pairings LIMIT 1').get().code),undefined);
   }finally{s.close();}
 });
+test('LINE pairing notices and stored expiry follow account TTL without repeating pending challenges',async(t)=>{
+  const now=1700000000000;t.mock.method(Date,'now',()=>now);
+  for(const [ttl,notice] of [[undefined,'発行から1時間'],[90000,'発行から90秒'],[1500,'発行から1500ミリ秒'],[null,'有効期限はありません']]){
+    const f=fixture({line:{dmPolicy:'pairing',allowFrom:[],...(ttl===undefined?{}:{pairingCodeTtlMs:ttl})}});
+    try{
+      for(let n=0;n<2;n++){const incoming=event('pair me');f.bridge.ingest(f.config.accounts[0],incoming);const job=f.store.pending().find(j=>j.id.endsWith(incoming.message.id));await f.bridge.process(job);f.store.finish(job.id);}
+      assert.equal(f.sent.length,1);const text=f.sent[0].messages[0].text;assert.ok(text.includes(notice));
+      if(ttl===null)assert.ok(!text.includes('1時間'));
+      assert.equal(f.store.db.prepare('SELECT expires FROM pairings').get().expires,ttl===null?null:now+(ttl ?? 3600000));
+    }finally{f.cleanup();}
+  }
+});
 test('durable queue deduplicates and preserves conversation order while controls beat a large backlog',()=>{
   const s=new Store(':memory:');try{
     const e=event();assert.equal(s.enqueue('default','same',e,'one'),true);assert.equal(s.enqueue('default','same',e,'one'),false);s.enqueue('default','same',e,'two');

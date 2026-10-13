@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomInt } from 'node:crypto';
+import { normalizePairingCodeTtlMs } from './pairing.mjs';
 
 export class Store {
   constructor(path) {
@@ -42,17 +43,18 @@ export class Store {
     this.db.prepare('UPDATE jobs SET status=?,error=?,due=? WHERE id=?').run(retryable && j.attempts<maxAttempts?'pending':'dead',code,Date.now()+Math.max(Math.min(300000,1000*2**j.attempts),Math.min(3600000,Number(retryAfterMs) || 0)),id);
   }
   paired(accountId,userId) {return !!this.db.prepare('SELECT 1 FROM pairings WHERE account_id=? AND user_id=? AND approved=1').get(accountId,userId);}
-  pairing(accountId,userId) {
-    this.db.prepare('DELETE FROM pairings WHERE approved=0 AND expires<?').run(Date.now());
+  pairing(accountId,userId,ttlMs) {
+    const ttl=normalizePairingCodeTtlMs(ttlMs),now=Date.now();
+    this.db.prepare('DELETE FROM pairings WHERE approved=0 AND expires IS NOT NULL AND expires<=?').run(now);
     const old=this.db.prepare('SELECT * FROM pairings WHERE account_id=? AND user_id=?').get(accountId,userId);
     if (old) return {code:old.code,created:false};
     if (this.db.prepare('SELECT COUNT(*) n FROM pairings WHERE account_id=? AND approved=0').get(accountId).n>=3) return {created:false};
     const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let code;
     do {code=Array.from({length:8},()=>chars[randomInt(chars.length)]).join('');} while(this.db.prepare('SELECT 1 FROM pairings WHERE code=?').get(code));
-    this.db.prepare('INSERT INTO pairings(account_id,user_id,code,expires) VALUES(?,?,?,?)').run(accountId,userId,code,Date.now()+3600000);
+    this.db.prepare('INSERT INTO pairings(account_id,user_id,code,expires) VALUES(?,?,?,?)').run(accountId,userId,code,ttl===null?null:now+ttl);
     return {code,created:true};
   }
-  approve(code) {return this.db.prepare('UPDATE pairings SET approved=1 WHERE code=? AND expires>? AND approved=0 RETURNING account_id,user_id').get(code,Date.now());}
+  approve(code) {return this.db.prepare('UPDATE pairings SET approved=1 WHERE code=? AND (expires IS NULL OR expires>?) AND approved=0 RETURNING account_id,user_id').get(code,Date.now());}
   revoke(accountId,userId) {return this.db.prepare('DELETE FROM pairings WHERE account_id=? AND user_id=?').run(accountId,userId).changes>0;}
   session(key) {return this.db.prepare('SELECT * FROM sessions WHERE key=?').get(key);}
   saveSession(key,accountId,source) {

@@ -1,5 +1,6 @@
 import { readFileSync, lstatSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { normalizePairingCodeTtlMs } from './pairing.mjs';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const own = (value, key) => Object.hasOwn(value || {}, key);
@@ -65,6 +66,7 @@ export function normalizeDiscord(raw, { base = process.cwd(), env = process.env 
     account.token = tokenValue(credentials.token, env) || secretFile(credentials.tokenFile, base) || (accountId === 'default' ? (env.DISCORD_BOT_TOKEN || '').trim() : '');
     account.dm = { enabled: true, groupEnabled: false, ...defaults.dm, ...overrides.dm };
     account.dmPolicy = overrides.dmPolicy ?? overrides.dm?.policy ?? defaults.dmPolicy ?? defaults.dm?.policy ?? 'pairing';
+    account.pairingCodeTtlMs = normalizePairingCodeTtlMs(account.pairingCodeTtlMs);
     account.allowFrom = overrides.allowFrom ?? overrides.dm?.allowFrom ?? defaults.allowFrom ?? defaults.dm?.allowFrom ?? [];
     account.groupPolicy ??= 'allowlist';
     account.allowBots ??= true;
