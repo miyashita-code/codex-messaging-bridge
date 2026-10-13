@@ -1,6 +1,6 @@
 # LINE
 
-[OpenClawの標準LINEガイド](https://docs.openclaw.ai/channels/line)と同じ順序・設定名で、LINE Botを接続します。このブリッジではLINE機能を本体に同梱しています。
+[OpenClawの標準LINEガイド](https://docs.openclaw.ai/channels/line)と同じ設定名・アクセス制御で、LINE Botを接続します。このブリッジではLINE機能を本体に同梱しています。
 
 ## Install
 
@@ -20,11 +20,12 @@ npm install
 
 ## Setup
 
-1. LINE Developersアカウントを作り、[Console](https://developers.line.biz/console/)を開きます。
-2. Providerを作成または選択し、Messaging API channelを追加します。
-3. チャネル設定から **Channel access token** と **Channel secret** を取得します。
-4. Messaging API settingsで **Use webhook** を有効にします。
-5. **Webhook URL** に、Gatewayの公開HTTPS endpointを設定します。
+1. LINE Business IDを登録し、LINE公式アカウントを作成します。[LINE Official Account Manager](https://manager.line.biz/)で対象アカウントを開きます。
+2. Official Account Managerの **設定 → Messaging API** でMessaging APIを有効にします。これによりMessaging APIチャネルが作成されます。
+3. 管理する **Provider** を作成または選択します。**選択後はProviderを変更・解除できません。** [LINE公式の作成手順](https://developers.line.biz/en/docs/messaging-api/getting-started/)も参照してください。
+4. 同じBusiness IDで[LINE Developers Console](https://developers.line.biz/console/)を開き、選んだProvider内のMessaging APIチャネルを開きます。**Basic settings** から **Channel secret**、**Messaging API** タブから **Channel access token** を取得します。
+5. **Webhook URL** に、Gatewayの公開HTTPS endpointを設定します。以下のConfigureでGatewayを起動した後に **Verify** の成功を確認し、**Use webhook** を有効にします。
+6. Official Account Managerの応答設定で **応答メッセージ** と **あいさつメッセージ** を無効にすると、Botからの返信を確認しやすくなります。どちらもチャネル作成時は有効です。[LINE公式のBot設定](https://developers.line.biz/en/docs/messaging-api/building-bot/)に詳細があります。
 
 ```text
 https://gateway-host/line/webhook

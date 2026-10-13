@@ -2,13 +2,21 @@ import { readFileSync, writeFileSync, existsSync, lstatSync, chmodSync } from 'n
 import { resolve } from 'node:path';
 
 export const LINE_SETUP = `LINE — Setup
-1. LINE Developersアカウントを作り、Consoleを開きます。
+1. LINE Business IDを登録し、LINE公式アカウントを作成します。
+   LINE Official Account Managerで対象アカウントを開きます。
+   https://manager.line.biz/
+2. Official Account Managerの 設定 → Messaging API で利用を有効にします。
+   Messaging API channelが作成されます。
+3. 管理するProviderを作成または選択します。
+   選択後はProviderを変更・解除できません。
+4. 同じBusiness IDでLINE Developers Consoleを開き、選んだProviderのchannelを開きます。
    https://developers.line.biz/console/
-2. Providerを作成または選択し、Messaging API channelを追加します。
-3. Channel access token と Channel secret をコピーします。
-4. Messaging API settings で Use webhook を有効にします。
-5. Webhook URL にGatewayのHTTPS endpointを設定します。
+   Basic settingsのChannel secretと、Messaging APIタブのChannel access tokenを取得します。
+5. Webhook URLにGatewayのHTTPS endpointを設定します。
    https://gateway-host/line/webhook
+   Gateway起動後にVerifyの成功を確認し、Use webhookを有効にします。
+6. 応答メッセージとあいさつメッセージは標準で有効です。
+   Official Account Managerで無効にするとBotの返信を確認しやすくなります。
 
 Configure: channels.line.dmPolicy は pairing が標準です。
 不明な送信者にはペアリングコードを返し、承認までAIへ渡しません。`;
