@@ -129,6 +129,21 @@ test('starts and resumes a persistent thread, preserving Codex defaults and imag
   assert.equal(children[0].messages.find(m => m.method === 'thread/resume').params.developerInstructions, 'new prompt');
 });
 
+test('resume token usage snapshots cannot bind the current turn to a previous turn', async t => {
+  const { backend, children } = fixture(t, (child, message) => {
+    if (message.method === 'turn/start') queueMicrotask(() => complete(child, message.params.threadId, '再開接続確認OK'));
+  });
+  const result = await backend.run({
+    sessionKey: 'user:resume', threadId: 'persisted-thread', input,
+    onThread: id => {
+      // The real app-server emits this historical snapshot after thread/resume.
+      // Persistence can yield between registering the thread and turn/start.
+      children[0].notification('thread/tokenUsage/updated', { threadId: id, turnId: 'previous-turn' });
+    },
+  });
+  assert.deepEqual(result, { threadId: 'persisted-thread', text: '再開接続確認OK' });
+});
+
 test('unspecified models use the advertised default model value for new and resumed threads', async t => {
   const { backend, children } = fixture(t, (child, message) => {
     if (message.method === 'turn/start') queueMicrotask(() => complete(child, message.params.threadId));

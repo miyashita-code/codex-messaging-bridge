@@ -3,6 +3,10 @@ import { isAbsolute } from 'node:path';
 
 const RPC_TIMEOUT_MS = 15_000;
 const MAX_PROTOCOL_LINE = 16 * 1024 * 1024;
+const TURN_NOTIFICATIONS = new Set([
+  'turn/started', 'turn/completed', 'item/started', 'item/completed',
+  'item/agentMessage/delta', 'error',
+]);
 
 export class CodexError extends Error {
   constructor(message, code = 'CODEX_ERROR') {
@@ -368,6 +372,9 @@ export class CodexBackend {
       this.#requests.delete(params.requestId);
       return;
     }
+    // thread/resume can publish token usage for its previous turn while the
+    // new thread is being persisted. Such snapshots must not bind this run.
+    if (!TURN_NOTIFICATIONS.has(message.method)) return;
     const state = this.#threads.get(params.threadId);
     if (!state || state.settled) return;
     const eventTurnId = params.turnId ?? params.turn?.id;
