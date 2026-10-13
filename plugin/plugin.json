@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "messaging-secretary",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Connect admitted LINE and Discord conversations to Your dot through MCP Events or a Discord cloud inbox.",
   "keywords": ["line", "discord", "assistant", "secretary", "dots"],
   "extensions": {
