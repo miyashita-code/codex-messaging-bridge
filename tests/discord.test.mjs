@@ -184,11 +184,23 @@ test('gateway identifies with configured intents, sends heartbeats and checks AC
   const socket = await ready(gateway);
   assert.equal(socket.url, 'wss://gateway.discord.gg/?v=10&encoding=json');
   assert.equal(socket.sent[0].op, 2); assert.equal(socket.sent[0].d.intents, 1 | 2 | (1 << 9) | (1 << 12) | (1 << 15));
+  assert.deepEqual(socket.sent[0].d.presence, { status: 'online', since: null, afk: false, activities: [] });
   assert.equal(gateway.status().ready, true);
   timers.runShortest(); assert.deepEqual(socket.sent.at(-1), { op: 1, d: 1 });
   socket.payload({ op: 11 }); timers.runShortest(); assert.equal(gateway.status().connected, true);
   timers.runShortest(); assert.equal(gateway.status().connected, false); assert.equal(warnings.length, 1);
   await gateway.close(); assert.equal(timers.jobs.size, 0);
+});
+
+test('initial presence honors configured Discord status without requesting the Presence Intent', async () => {
+  for (const status of ['online', 'idle', 'dnd', 'invisible', 'offline']) {
+    const { gateway } = createGateway({}, { ...account, status });
+    const socket = await ready(gateway);
+    assert.deepEqual(socket.sent[0].d.presence, { status, since: null, afk: false, activities: [] });
+    assert.equal(socket.sent[0].d.intents & (1 << 8), 0);
+    await gateway.close();
+  }
+  assert.throws(() => createGateway({}, { ...account, status: 'unexpected' }), (error) => error.code === 'INVALID_PRESENCE');
 });
 
 test('server heartbeat requests are answered immediately', async () => {

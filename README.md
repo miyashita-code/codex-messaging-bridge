@@ -99,6 +99,8 @@ CODEX_E2E=1 npm run test:codex-e2e
 
 通常のテストはサービス認証情報を使わず、モックのLINE / Discord / MCP経路を検証します。`CODEX_SMOKE` はCodexログイン接続のみ、`CODEX_E2E` は自分のログインで実際に2回推論し、ペアリング・重複抑止・再起動後の会話再開まで検査します。E2EのDiscord通信は模擬で、一時的なブリッジデータは削除します。Codex側には検査用の会話が残ります。実Bot・Your dotとの往復、cloud computerの継続稼働はそれぞれの実環境で確認します。Node.js 22 / 24 / 26で検査するGitHub Actions設定例は `deploy/github-actions-ci.yml.example` にあります。利用する場合は `.github/workflows/ci.yml` にコピーします。このリポジトリでは、現在のGitHub CLI認証にworkflow書き込み権限がないためCIを有効化していません。
 
+2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。これは個人用Codex経路の実通信検証です。LINE、Your dot MCP Events、Your dotのcloud computerでの実通信・継続稼働は未検証です。
+
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
 ## English quickstart

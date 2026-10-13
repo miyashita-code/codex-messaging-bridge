@@ -188,6 +188,7 @@ Botをメンションしたメッセージ、またはBotの発言に返信し�
 | `guilds.<serverId>.users` / `.roles` | 送信者IDまたはRole IDに一致するメンバーを許可。どちらかが一致すれば受付 |
 | `guilds.<serverId>.channels.<channelId>` | チャンネル別の送信者・メンション設定。サーバー設定の指定項目を上書き |
 | `allowBots` | 標準は `true`。`false` でBot発言を停止。`"mentions"` は本文でBotを呼び出した場合だけ受付。自身の発言は常に除外 |
+| `status` | 起動時のBot表示。標準は `online`。`idle` / `dnd` / `invisible` / `offline` も指定可能。Presence Intentは不要 |
 | `mediaMaxMb` | 添付サイズ上限。標準100MB。Discord側の上限・権限も適用 |
 
 複数Botは `channels.discord.accounts.<accountId>` ごとにTokenと設定を追加します。`DISCORD_BOT_TOKEN` はdefault accountにだけ適用され、名前付きaccountは別Tokenを指定します。設定を変更した後はGatewayを再起動します。

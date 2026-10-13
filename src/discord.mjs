@@ -356,7 +356,7 @@ function gatewayURL(value) {
 
 /** Gateway ingress acknowledges a dispatch only after onMessage durably accepts it. */
 export class DiscordGateway {
-  #account; #token; #client; #WebSocket; #onMessage; #onInteraction; #onInteractionReceived; #logger; #socket;
+  #account; #token; #client; #WebSocket; #onMessage; #onInteraction; #onInteractionReceived; #logger; #socket; #presence;
   #stopped = true; #fatal; #ready = false; #session; #resumeURL; #gatewayURL;
   #receivedSeq = null; #committedSeq = null; #userId; #channels = new Map(); #guilds = new Map();
   #heartbeatTimer; #reconnectTimer; #helloTimer; #awaitingAck = false; #heartbeatInterval = 0;
@@ -369,6 +369,9 @@ export class DiscordGateway {
     if (typeof onMessage !== 'function') throw new TypeError('onMessage must be a function.');
     if (onInteraction !== undefined && typeof onInteraction !== 'function') throw new TypeError('onInteraction must be a function.');
     if (onInteractionReceived !== undefined && typeof onInteractionReceived !== 'function') throw new TypeError('onInteractionReceived must be a function.');
+    const presenceStatus = account.status ?? 'online';
+    if (!['online', 'idle', 'dnd', 'invisible', 'offline'].includes(presenceStatus)) throw new DiscordError('Discord presence status is invalid.', { code: 'INVALID_PRESENCE' });
+    this.#presence = { status: presenceStatus, since: null, afk: false, activities: [] };
     this.#account = account; this.#token = account.token.trim(); this.#WebSocket = WebSocketImpl;
     this.#onMessage = onMessage; this.#onInteraction = onInteraction; this.#onInteractionReceived = onInteractionReceived;
     this.#logger = logger; this.#timers = timers; this.#random = random;
@@ -453,7 +456,7 @@ export class DiscordGateway {
         this.#heartbeatTimer = this.#timer(() => this.#heartbeat(true), Math.floor(this.#random() * this.#heartbeatInterval));
         if (this.#session && this.#committedSeq !== null) this.#send(6, { token: this.#token, session_id: this.#session, seq: this.#committedSeq });
         else this.#send(2, { token: this.#token, intents: 1 | (1 << 9) | (1 << 12) | (this.#account.intents?.messageContent === false ? 0 : (1 << 15)) | (this.#account.intents?.guildMembers ? 2 : 0),
-          properties: { os: process.platform, browser: 'codex-discord-bridge', device: 'codex-discord-bridge' } });
+          properties: { os: process.platform, browser: 'codex-discord-bridge', device: 'codex-discord-bridge' }, presence: this.#presence });
         this.#helloTimer = this.#timer(() => { if (!this.#ready) this.#disconnect(); }, 30_000);
         break;
       }
