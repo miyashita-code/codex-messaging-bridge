@@ -96,7 +96,7 @@ npm run check
 CODEX_SMOKE=1 node --test --test-name-pattern='real CLI smoke' tests/codex.test.mjs
 ```
 
-通常のテストはサービス認証情報を使わず、モックのLINE / Discord / MCP経路を検証します。最後のコマンドは自分のCodexログインを使う実推論の任意検査です。実Bot・Your dotとの往復、cloud computerの継続稼働はそれぞれの実環境で確認します。GitHub ActionsはNode.js 22 / 24 / 26で通常テストと構文チェックを実行します。
+通常のテストはサービス認証情報を使わず、モックのLINE / Discord / MCP経路を検証します。最後のコマンドは自分のCodexログインを使う実推論の任意検査です。実Bot・Your dotとの往復、cloud computerの継続稼働はそれぞれの実環境で確認します。Node.js 22 / 24 / 26で検査するGitHub Actions設定例は `deploy/github-actions-ci.yml.example` にあります。利用する場合は `.github/workflows/ci.yml` にコピーします。このリポジトリでは、現在のGitHub CLI認証にworkflow書き込み権限がないためCIを有効化していません。
 
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
