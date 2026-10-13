@@ -1,5 +1,7 @@
 # Your dot と LINE の接続
 
+repoをdotへ渡してセットアップを任せる場合は、[AGENTS.md](../AGENTS.md) と [エージェント用セットアップ](agent-onboarding.md) から始めます。cloudの準備と接続済みPCでのアカウント設定を分け、既存のローカルBotを維持しながら切り替えを検証します。
+
 Discordも同じMCP endpointで使えます。イベントは `discord.message.created`、ツールは `discord_list_conversations`、`discord_list_inbox`、`discord_read_message`、`discord_read_media`、`discord_reply` です。DiscordのBot設定とペアリングは[Discord標準セットアップ](discord-setup.md)に従います。LINEとDiscordの購読・配信は別々に保持します。
 
 公開サーバーを用意しないDiscord構成は `bridge.discord.cloud.example.json` の `backend: "inbox"` / `transport: "headless"` です。これはMCPイベント購読を使わず、Your dotが同じcomputerのCLIで受信箱を読み、返信します。新着で自動起動する経路とは別です。[Cloud computerでの運用](cloud-computer.md)
@@ -59,6 +61,8 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 ## 配布用プラグイン
 
 `plugin/plugin.json` は現在のportable Agent Plugins形式です。`plugin/mcp.json.example` のドメインを実際のHTTPS URLへ置き換え、`plugin/mcp.json` として保存してから配布します。認証情報をmanifestへ書きません。Your dot向けのオンボーディングスキルを同梱しています。
+
+**GitHubからpluginをimportすることと、cloudで使えるMCP接続を作ることは別の工程です。** 公式のworkspace importでは、`mcp.json` / `.mcp.json` にMCP serverを宣言したpluginは、接続先がremote HTTPSでもDesktop onlyとされています。cloudで使う接続は利用可能なcustom MCP /登録済みappの経路で実際に追加・認証し、dotからツールとイベントを利用できることを確認します。既存appへの `.app.json` 参照だけではappの作成や権限付与は行われません。[Plugin management](https://learn.chatgpt.com/docs/enterprise/plugin-management)
 
 この設定例のOAuth `baseScopes` は、LINEの閲覧・返信に `line:read` / `line:write`、Discordの閲覧・返信に `discord:read` / `discord:write`、両方の新着購読に `events:subscribe` を要求します。LINEだけ、またはDiscordだけで配布する場合は、使わないチャネルの2つのscopeを外せます。LINE用scopeだけで接続済みの利用者がDiscordを追加するときは、manifestを更新して再接続・再認可し、Discordの権限も与えます。既存access tokenやrefresh tokenには、設定例の変更だけでは新しいscopeが追加されません。
 

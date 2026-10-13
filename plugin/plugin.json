@@ -1,9 +1,15 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "messaging-secretary",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Connect admitted LINE and Discord conversations to Your dot through MCP Events or a Discord cloud inbox.",
-  "keywords": ["line", "discord", "assistant", "secretary", "dots"],
+  "keywords": [
+    "line",
+    "discord",
+    "assistant",
+    "secretary",
+    "dots"
+  ],
   "extensions": {
     "com.openai": {
       "onboardingSkill": "./skills/setup-messaging-secretary/SKILL.md",
@@ -12,7 +18,10 @@
         "shortDescription": "Your dotにLINE・Discord会話をつなぐ",
         "longDescription": "許可済みのLINE・Discord受信と同じ会話への返信を扱います。Discordには公開HTTPサーバーを開かない受信箱モードもあります。",
         "category": "Productivity",
-        "capabilities": ["Read", "Write"],
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
         "defaultPrompt": [
           "LINE AI秘書の接続を設定して、許可済みの自分のLINE会話を購読してください。",
           "LINEから依頼された仕事を進めて、同じLINE会話に返答してください。",

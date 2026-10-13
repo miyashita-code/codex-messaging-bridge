@@ -6,7 +6,7 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 mkdirSync(resolve(root,'data'),{recursive:true,mode:0o700});
 const target=resolve(root,'data/codex-messaging-bridge-cloud.tar.gz');
 // Explicit allowlist: never package the active .env, local config, receipts or authentication files.
-const files=['package.json','package-lock.json','README.md','CHANGELOG.md','LICENSE','.env.example','bridge.config.example.json','bridge.discord.example.json','bridge.discord.cloud.example.json','src','bin','scripts','docs','deploy','plugin','tests'];
+const files=['package.json','package-lock.json','README.md','CHANGELOG.md','AGENTS.md','agent.md','LICENSE','.env.example','bridge.config.example.json','bridge.discord.example.json','bridge.discord.cloud.example.json','src','bin','scripts','docs','deploy','plugin','tests'];
 const work=mkdtempSync(resolve(root,'data/.cloud-package-'));
 const stage=join(work,'source'),archive=join(work,'archive.tar.gz');
 const excluded=name=>name==='.DS_Store' || name.startsWith('._') || (name.startsWith('.env') && name!=='.env.example') || name==='bridge.config.json' || /\.sqlite.*$|\.log$/.test(name);

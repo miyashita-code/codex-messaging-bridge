@@ -4,6 +4,21 @@ LINE・Discordから、Your dotまたは自分のCodexをAI秘書として使う
 
 An open-source LINE / Discord bridge for Your dot and personal Codex. It follows OpenClaw-style channel settings, setup and pairing. Use your own bot, credentials and data directory. See the [English quickstart](#english-quickstart).
 
+## dotにセットアップを任せる
+
+このrepoのURLと、次の依頼をYour dotへ渡します。エージェントの入口は [AGENTS.md](AGENTS.md) です。
+
+> このrepoのAGENTS.mdに従って、LINEとDiscordを私のdotにつないで。cloud computerを主な稼働先にし、ログインやBotのアカウント設定は接続済みの私のPCで進めて。接続コードは期限なしにして。既存の設定を引き継ぎ、実際の送受信とPCに依存しない動作まで確認して。
+
+dotはcloudで動作条件を確認し、専用の非公開設定を準備します。ログイン済みブラウザやアカウント作成が必要な工程は、接続済みPCのツールで進めます。途中で本人の認証操作が必要になっても、進捗を保存して続きから再開できます。[セットアップの流れ](docs/agent-onboarding.md)
+
+```bash
+./bin/codex-line-bridge setup plan --target dot-cloud --channel both
+./bin/codex-line-bridge setup prepare --target dot-cloud --channel both
+```
+
+`prepare` は `data/setup/dot-cloud/` に専用設定と進捗を作り、既存のBot設定を上書きしません。新規セットアップのペアリングコードは期限なしです。cloudの常駐・LINE用の安定したHTTPS・dotの実接続は別途確認します。これらが利用できない場合は不足条件を保存し、Mac上の動作をcloud移行完了として扱いません。
+
 ## 使い方を選ぶ
 
 | 構成 | 応答するAI | 公開HTTPS | 動作 |
@@ -86,6 +101,8 @@ DMは既定で `dmPolicy: "pairing"`、グループは `groupPolicy: "allowlist"
 
 macOS LaunchAgent、Linux systemd、Caddyの例を `deploy/` に同梱しています。データは既定で `data/`、保存期間は30日、受信キュー上限は10000件です。バックアップはプロセス停止後、SQLite本体と関連ファイルを一緒に保存します。
 
+ローカルで動かす場合、電源オフやスリープ中は返信できません。LaunchAgentはユーザーログイン後、systemdは設定した起動条件で復帰します。承認と会話履歴はDBに残ります。dotにrepoを渡しても、既存のローカルGatewayが自動でcloudへ移るわけではありません。PCが使えない状態でも新規メッセージへの返信が成功したことを確認して、PCから独立した運用と判定します。
+
 ## 実装範囲・検証
 
 署名検証、Gateway再接続、会話ごとの順序、重複排除、再試行、DMペアリング、グループ許可、メディア取得、返信の分割、送信の冪等性、OAuth / PKCE、MCP Eventsを実装しています。個人用Codexは会話を継続し、承認要求を依頼者へ返します。既定のsandboxは `read-only` です。
@@ -103,11 +120,13 @@ CODEX_E2E=1 npm run test:codex-e2e
 
 2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。
 
-2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。Your dotへの実接続、MCP EventsによるYour dotとの往復、cloud computerでの実通信・継続稼働は未検証です。通常テストは164件成功・1件スキップです。[変更履歴](CHANGELOG.md)
+2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。Your dotへの実接続、MCP EventsによるYour dotとの往復、cloud computerでの実通信・継続稼働は未検証です。通常テストは180件成功・1件スキップです。repo引き渡し用セットアップも隔離環境で検証しています。[変更履歴](CHANGELOG.md)
 
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
 ## English quickstart
+
+To let your dot handle setup, give it this repository and ask: “Follow AGENTS.md to connect LINE and Discord to my dot. Prepare the cloud runtime, use my connected computer for account setup, preserve existing settings, and verify actual replies without depending on my laptop.” The [agent onboarding guide](docs/agent-onboarding.md) covers resumable setup and the capability checks needed before claiming cloud operation.
 
 Use Node.js **22.13+**, npm, Git and a POSIX shell (macOS, Linux or WSL). Clone this repository and install with `npm ci --ignore-scripts`; there are no external runtime npm dependencies.
 

@@ -13,6 +13,7 @@ import { DiscordBridge } from './discord-bridge.mjs';
 import { Bridge } from './bridge.mjs';
 import { configureLine,LINE_SETUP,configureDiscord,DISCORD_SETUP } from './onboarding.mjs';
 import { checkCloudRuntime } from './cloud-check.mjs';
+import { runSetup } from './setup.mjs';
 
 const args=process.argv.slice(2),ci=args.indexOf('--config');let configPath='bridge.config.json';
 if(ci>=0){configPath=args[ci+1];args.splice(ci,2);if(!configPath)throw new Error('--config needs a path');}
@@ -20,8 +21,9 @@ const command=args[0] || 'help';
 let pairingChannel='line';if(command==='pairing' && ['line','discord'].includes(args[2])){pairingChannel=args[2];args.splice(2,1);}
 const option=name=>args.includes(name)?args[args.indexOf(name)+1]:undefined;
 async function main() {
+  if(command==='setup'){console.log(JSON.stringify(runSetup(args.slice(1),{configPath:ci>=0?configPath:undefined}),null,2));return;}
   if(command==='cloud-check'){const result=await checkCloudRuntime({probe:args.includes('--probe')});console.log(JSON.stringify(result,null,2));if(!result.webSocket || (args.includes('--probe') && !result.discordWss))process.exitCode=1;return;}
-  if(command==='channels' && args[1]==='add') {const channel=option('--channel') || 'line';if(channel==='discord')await configureDiscord({configPath});else if(channel==='line')await configureLine();else throw new Error('Channel must be line or discord');return;}
+  if(command==='channels' && args[1]==='add') {const channel=option('--channel') || 'line',envPath=option('--env-path') || '.env';if(channel==='discord')await configureDiscord({configPath,envPath});else if(channel==='line')await configureLine({envPath});else throw new Error('Channel must be line or discord');return;}
   if(command==='onboard' || (command==='channels' && args[1]==='setup')){console.log(option('--channel')==='discord'?DISCORD_SETUP:LINE_SETUP);return;}
   if(command==='init') {
     const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
@@ -30,7 +32,7 @@ async function main() {
     if(!existsSync('.env'))writeFileSync('.env',`LINE_CHANNEL_ACCESS_TOKEN=\nLINE_CHANNEL_SECRET=\nDISCORD_BOT_TOKEN=\nLINE_BRIDGE_OWNER_SECRET=${randomBytes(32).toString('base64url')}\nLINE_BRIDGE_MCP_TOKEN=${randomBytes(32).toString('base64url')}\nLINE_BRIDGE_PUBLIC_URL=\n`,{flag:'wx',mode:0o600});
     console.log(JSON.stringify({created:resolve(configPath),envFile:resolve('.env'),next:'Set LINE credentials and public HTTPS URL privately in .env, then npm run doctor.'}));return;
   }
-  if(command==='help') {console.log('codex-line-bridge init | onboard --channel line|discord | channels add --channel line|discord | channels status --probe | channels commands --channel discord | gateway | gateway status | doctor | pairing list line|discord | pairing approve line|discord CODE | pairing revoke line|discord ACCOUNT USER | queue list | queue retry ID | inbox list --channel discord | inbox read ID | inbox reply ID --text TEXT --idempotency-key KEY\nUse --config PATH to select configuration.');return;}
+  if(command==='help') {console.log('codex-line-bridge setup plan|prepare --target dot-cloud|local --channel line|discord|both --mode dot|inbox|codex | init | onboard --channel line|discord | channels add --channel line|discord --env-path PATH | channels status --probe | channels commands --channel discord | gateway | gateway status | doctor | pairing list line|discord | pairing approve line|discord CODE | pairing revoke line|discord ACCOUNT USER | queue list | queue retry ID | inbox list --channel discord | inbox read ID | inbox reply ID --text TEXT --idempotency-key KEY\nUse --config PATH to select configuration.');return;}
   const config=loadConfig(configPath);
   if(command==='directory' && ['peers','groups'].includes(args[1]) && args[2]==='list') {
     const get=name=>args.includes(name)?args[args.indexOf(name)+1]:undefined;

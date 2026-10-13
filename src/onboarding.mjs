@@ -35,7 +35,7 @@ export function saveEnvValues(path,values) {
 }
 export function promptTerminal(label,{secret=false,input=process.stdin,output=process.stdout}={}) {
   if(!input.isTTY || !output.isTTY)throw new Error('Interactive setup requires a terminal. Configure .env privately instead.');
-  output.write(label);const wasRaw=!!input.isRaw;input.setRawMode(true);input.resume();
+  const wasRaw=!!input.isRaw;input.setRawMode(true);output.write(label);input.resume();
   return new Promise((resolve,reject)=>{
     let value='';
     const done=error=>{input.off('data',onData);input.setRawMode(wasRaw);input.pause();output.write('\n');error?reject(error):resolve(value.trim());};
