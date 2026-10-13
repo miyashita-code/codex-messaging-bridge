@@ -60,6 +60,8 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 
 `plugin/plugin.json` は現在のportable Agent Plugins形式です。`plugin/mcp.json.example` のドメインを実際のHTTPS URLへ置き換え、`plugin/mcp.json` として保存してから配布します。認証情報をmanifestへ書きません。Your dot向けのオンボーディングスキルを同梱しています。
 
+この設定例のOAuth `baseScopes` は、LINEの閲覧・返信に `line:read` / `line:write`、Discordの閲覧・返信に `discord:read` / `discord:write`、両方の新着購読に `events:subscribe` を要求します。LINEだけ、またはDiscordだけで配布する場合は、使わないチャネルの2つのscopeを外せます。LINE用scopeだけで接続済みの利用者がDiscordを追加するときは、manifestを更新して再接続・再認可し、Discordの権限も与えます。既存access tokenやrefresh tokenには、設定例の変更だけでは新しいscopeが追加されません。
+
 公開提出は安定した公開HTTPS endpointで行います。URLを差し替えただけで公開プラグイン審査済みにはなりません。利用者ごとに、このブリッジの独立インスタンス・LINEチャネル・OAuth認可・データ保存領域を用意する構成です。マルチテナントのSaaSや課金・顧客管理は含みません。公式の[Package your plugin](https://developers.openai.com/plugins/build/plugins)を参照してください。
 
 ## 個人用Codexバックエンドとの違い

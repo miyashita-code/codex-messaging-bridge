@@ -10,7 +10,7 @@
             "type": "oauth",
             "authorizationUrl": "https://YOUR-BRIDGE-DOMAIN/oauth/authorize",
             "tokenUrl": "https://YOUR-BRIDGE-DOMAIN/oauth/token",
-            "baseScopes": ["line:read", "line:write", "events:subscribe"]
+            "baseScopes": ["line:read", "line:write", "discord:read", "discord:write", "events:subscribe"]
           }
         }
       }
