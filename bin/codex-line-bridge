@@ -1,0 +1,4 @@
+#!/bin/sh
+bridge_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$bridge_root" || exit 1
+exec node --env-file-if-exists="$bridge_root/.env" "$bridge_root/src/cli.mjs" "$@"

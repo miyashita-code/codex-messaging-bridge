@@ -1,0 +1,18 @@
+{
+  "backend": "dot",
+  "transport": "http",
+  "host": "127.0.0.1",
+  "port": 8787,
+  "publicUrl": "${LINE_BRIDGE_PUBLIC_URL}",
+  "dataDir": "./data",
+  "channels": {
+    "line": {"enabled": false},
+    "discord": {
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "guilds": {}
+    }
+  }
+}

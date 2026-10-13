@@ -1,0 +1,15 @@
+{
+  "backend": "inbox",
+  "transport": "headless",
+  "dataDir": "./data",
+  "channels": {
+    "line": {"enabled": false},
+    "discord": {
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "guilds": {}
+    }
+  }
+}

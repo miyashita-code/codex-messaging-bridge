@@ -1,0 +1,15 @@
+[Unit]
+Description=Your dot LINE bridge
+After=network-online.target
+[Service]
+Type=simple
+User=linebridge
+WorkingDirectory=/opt/codex-line-bridge
+ExecStart=/usr/bin/node --env-file=/opt/codex-line-bridge/.env /opt/codex-line-bridge/src/cli.mjs start
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target

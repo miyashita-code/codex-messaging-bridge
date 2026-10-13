@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "line-secretary": {
+      "type": "streamable-http",
+      "url": "https://YOUR-BRIDGE-DOMAIN/mcp",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "authorizationUrl": "https://YOUR-BRIDGE-DOMAIN/oauth/authorize",
+            "tokenUrl": "https://YOUR-BRIDGE-DOMAIN/oauth/token",
+            "baseScopes": ["line:read", "line:write", "events:subscribe"]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "host": "127.0.0.1",
+  "port": 8787,
+  "backend": "dot",
+  "publicUrl": "${LINE_BRIDGE_PUBLIC_URL}",
+  "dataDir": "./data",
+  "concurrency": 8,
+  "maxAttempts": 8,
+  "mediaMaxMb": 10,
+  "mcp": {"subscriptionTtlMs": 86400000},
+  "codex": {
+    "command": "codex",
+    "cwd": "./data/workspace",
+    "sandbox": "read-only",
+    "approvalPolicy": "on-request",
+    "turnTimeoutMs": 900000
+  },
+  "channels": {
+    "defaults": {"implicitMentions": {"quotedBot": true}},
+    "line": {
+      "enabled": true,
+      "webhookPath": "/line/webhook",
+      "dmPolicy": "pairing",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": [],
+      "groups": {"*": {"requireMention": true}},
+      "intro": "こんにちは。AI秘書です。このグループで担当する仕事を教えてください。"
+    }
+  }
+}

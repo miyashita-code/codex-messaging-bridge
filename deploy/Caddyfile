@@ -1,0 +1,4 @@
+# Set your domain; .env LINE_BRIDGE_PUBLIC_URL must match it.
+line.example.com {
+  reverse_proxy 127.0.0.1:8787
+}
