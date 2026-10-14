@@ -81,10 +81,13 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 | dot会話のcode runtime（dotの試験報告） | Node.js 24.19。v0.2.0（`32282a8`）をcloneし、setup planは `ready:false`。`cloud-check --probe` と未認証Discord WSSのHELLO受信は成功。 | private SQLiteを別の完了turn後に再読。background起動元のコマンド終了後にheartbeatが停止。公式cloudflaredのQuick TunnelはDNSのUDP接続が `network unreachable` で停止し、URLを発行できず。 |
 | 保存済みCloud environmentの別task（別taskの実行ログ） | Node.js 24.19、clone・setup plan成功（`ready:false`）。Discordは `EAI_AGAIN`、proxyのCONNECTは403、WSSは失敗。 | 同一processが完了turnをまたいで約95秒・19 heartbeat継続し、privateファイルの600権限を維持。環境の再起動をまたぐ復帰は未測定。 |
 | 所有者限定SiteのWorker（実HTTPリクエストの計測、04:11 UTC） | Discord discoveryのHTTPSは200、Gateway WSSは101、未認証の `op:10` HELLO受信に成功。Bot接続secretは使用せず、Identifyは送信していない。 | 1回のHTTPリクエスト中の短時間probe。自身のsocketにcloseを要求して終了し、heartbeat・background worker・常駐・再起動は未検証。 |
+| dotのcloud browser → 所有者限定Site（dotの画面結果とSiteの呼出記録、16:36–16:37 JST） | 通常の本人サインイン後、受信WebSocketを45秒ずつ2回開き、各9件・計18件の診断フレームを受信。画面結果は `two_windows_complete`、両方のclose codeは1000。 | 約92秒の接続と再接続を確認。タブの公式保持操作が必要だった。Siteの呼出記録には両socketの約45秒の実行があるが、outcomeは `exception` で詳細原因は取得できず。Bot受信・無人常駐・自動復旧の実証には含めない。 |
 
 Sitesで最初に出た `TypeError` は、workerdの `fetch` で `redirect: 'error'` を使ったときの互換性問題でした。`redirect: 'manual'` と明示的な3xx拒否へ変更した後、上記の通信が成功しました。[workerdの公式実装](https://github.com/cloudflare/workerd/blob/main/src/workerd/api/http.c%2B%2B#L446-L450) この初回エラーや、別のcloud環境での通信失敗を根拠に、Sites全体のDiscord向け通信が遮断されているとは判断しません。実測が確認したのは処理中の外向き通信で、`runtimeVerified` と `uptimeVerified` はともに `false` です。
 
 同日16:05 JST、Your dotは接続済みSiteの認証付き `bridge_status` 呼び出し成功とイベントソース表示を報告しました。状態は `owner_configured: true`、`guild_configured: true`、`companion_configured: false`、`backend_connected: false`、`dot_auto_wake: false` で、ローカルのエージェントから行った実際の接続ツール呼び出しとも一致しました。これはMCP入口が使えることの確認です。イベントの実購読・受信プロセスの継続・実メッセージへの返信は、引き続き別に検証します。ブラウザでSiteへログインするセッションとMCPのOAuth接続も別であり、一方の成功をもう一方の認証済み状態として扱いません。
+
+短時間のブラウザ試験では、最初のタブが結果回収前に自動終了しました。提供された `markHandoff` で試験タブを保持してやり直すと、上表の2回の接続結果を回収できました。これは公式のタブ保持操作による診断であり、ブラウザやプロセスの終了管理を変更していません。終了後は試験タブを閉じ、期間限定の診断経路を無効化しました。ブラウザを開いている間の接続成功だけから、管理された常駐サービスや再起動後の自動復旧が用意されたとは判断しません。
 
 未認証WSSのHELLO、設定生成、短時間のprocess継続は、Botの認証・実メッセージ受信・Your dotの返信・24時間稼働の証拠にはしません。既存localの実往復とgateway復帰の確認は、cloudでの往復やPC off時の稼働と区別します。**cloudでのLINE / Discord → Your dot → 同じ会話への返信と、local資源を使わない往復は未完了です。** 以下の条件を引き続き確認してから運用可否を判断します。
 
