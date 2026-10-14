@@ -96,6 +96,8 @@ Your dotがrepo専用のCodex cloud taskを使う場合、repoとsetupを持つc
 
 `nohup`やbackground起動が成功したこと、stateファイルが残っていることだけで24時間稼働を判断しません。Your dot自身のcloud workはPCがoffでも続きますが、任意のdaemonや公開portの保証とは別です。制約が見つかったら具体的な不足を記録し、アカウント設定など独立してできる作業を続けます。自動で有料hostingを契約したり、local稼働へ変更したりしません。[Cloud computerの条件](cloud-computer.md)
 
+実行環境ごとに結果を分けます。2026年10月14日の所有者限定Sites Workerでは、HTTPリクエスト処理中のDiscord HTTPSと未認証WSSのHELLO受信が成功しました。dotのdesktop computerや別のcloud taskの通信結果を、そのままSitesへ当てはめません。この短時間probeもBot認証・heartbeat継続・イベント購読・実返信の完了には含めません。[環境別の実測](cloud-computer.md#cloudでの試験結果と残る確認)
+
 ## 3. Local PCでアカウント設定を進める
 
 Your dotのprofile → **Computers → Your computer → Allow access** で接続できます。local作業中はPCをonlineにし、ChatGPT desktop appを起動しておきます。この許可はCodexのcomputer接続やWork Syncとは別です。Your dotは、接続済みcomputerにlocal Work / Codex taskを作り、必要な設定を進められます。[Computers and apps](https://learn.chatgpt.com/docs/dots/computers-and-apps)
