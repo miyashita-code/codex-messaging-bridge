@@ -27,7 +27,7 @@ localで設定したBotをcloudで動かすには、cloud runtimeにも必要な
 
 ## 現在のlocal構成と電源・再起動
 
-実機確認済みの構成はmacOS上の個人用Codexです。LINE / DiscordのGatewayとCodex app-serverはlocalで動きます。LINEは公開HTTPS tunnel経由でlocal Webhookへ届きます。Your dotとのcloud MCP接続・イベント購読はまだ実機確認していません。
+実メッセージの往復を確認済みの構成はmacOS上の個人用Codexです。LINE / DiscordのGatewayとCodex app-serverはlocalで動きます。LINEは公開HTTPS tunnel経由でlocal Webhookへ届きます。所有者限定SiteのMCPプラグインはインストール・OAuth接続を完了し、認証済みの状態取得を確認しました。Your dot側からも状態取得成功とイベントソースの表示が報告されています。イベント購読とcloudでの自動返信は未検証です。
 
 この構成ではshutdown / sleep / network切断中に受信と返答が止まります。設定したLaunchAgentはログイン後にサービスを起動し、process停止時の復帰も行いますが、PCの電源off中に動くものではありません。実機ではGateway再起動後の承認・会話の継続を確認しており、macOS全体のreboot / loginをまたぐE2E試験とは区別します。配布repoだけでこのMacのprivate service設定が他のcomputerへコピーされることもありません。
 
@@ -82,7 +82,9 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 | 保存済みCloud environmentの別task（別taskの実行ログ） | Node.js 24.19、clone・setup plan成功（`ready:false`）。Discordは `EAI_AGAIN`、proxyのCONNECTは403、WSSは失敗。 | 同一processが完了turnをまたいで約95秒・19 heartbeat継続し、privateファイルの600権限を維持。環境の再起動をまたぐ復帰は未測定。 |
 | 所有者限定SiteのWorker（実HTTPリクエストの計測、04:11 UTC） | Discord discoveryのHTTPSは200、Gateway WSSは101、未認証の `op:10` HELLO受信に成功。Bot接続secretは使用せず、Identifyは送信していない。 | 1回のHTTPリクエスト中の短時間probe。自身のsocketにcloseを要求して終了し、heartbeat・background worker・常駐・再起動は未検証。 |
 
-Sitesで最初に出た `TypeError` は、workerdの `fetch` で `redirect: 'error'` を使ったときの互換性問題でした。`redirect: 'manual'` と明示的な3xx拒否へ変更した後、上記の通信が成功しました。[workerdの公式実装](https://github.com/cloudflare/workerd/blob/main/src/workerd/api/http.c%2B%2B#L446-L450) この初回エラーや、別のcloud環境での通信失敗を根拠に、Sites全体のDiscord向け通信が遮断されているとは判断しません。実測が確認したのは処理中の外向き通信で、`runtimeVerified` と `uptimeVerified` はともに `false` です。Siteのapp接続・dotの購読と、受信を継続するruntimeの確定はまだ済んでいません。
+Sitesで最初に出た `TypeError` は、workerdの `fetch` で `redirect: 'error'` を使ったときの互換性問題でした。`redirect: 'manual'` と明示的な3xx拒否へ変更した後、上記の通信が成功しました。[workerdの公式実装](https://github.com/cloudflare/workerd/blob/main/src/workerd/api/http.c%2B%2B#L446-L450) この初回エラーや、別のcloud環境での通信失敗を根拠に、Sites全体のDiscord向け通信が遮断されているとは判断しません。実測が確認したのは処理中の外向き通信で、`runtimeVerified` と `uptimeVerified` はともに `false` です。
+
+同日16:05 JST、Your dotは接続済みSiteの認証付き `bridge_status` 呼び出し成功とイベントソース表示を報告しました。状態は `owner_configured: true`、`guild_configured: true`、`companion_configured: false`、`backend_connected: false`、`dot_auto_wake: false` で、ローカルのエージェントから行った実際の接続ツール呼び出しとも一致しました。これはMCP入口が使えることの確認です。イベントの実購読・受信プロセスの継続・実メッセージへの返信は、引き続き別に検証します。ブラウザでSiteへログインするセッションとMCPのOAuth接続も別であり、一方の成功をもう一方の認証済み状態として扱いません。
 
 未認証WSSのHELLO、設定生成、短時間のprocess継続は、Botの認証・実メッセージ受信・Your dotの返信・24時間稼働の証拠にはしません。既存localの実往復とgateway復帰の確認は、cloudでの往復やPC off時の稼働と区別します。**cloudでのLINE / Discord → Your dot → 同じ会話への返信と、local資源を使わない往復は未完了です。** 以下の条件を引き続き確認してから運用可否を判断します。
 
