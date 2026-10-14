@@ -72,4 +72,4 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 
 `backend: "codex"` は、このMacの既存Codexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。提供するサービスでは標準のYour dot + MCP Events経路を使い、ローカルCodex代替を商用認証として扱わないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
-この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。Your dotへの実接続・実際のイベント購読・cloud computerでの運用は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。
+この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。この実装からの実際のイベント購読・Your dotの自動返信・cloud computerでの運用は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。

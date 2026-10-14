@@ -120,7 +120,7 @@ CODEX_E2E=1 npm run test:codex-e2e
 
 2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。
 
-2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。Your dotへの実接続、MCP EventsによるYour dotとの往復、cloud computerでの実通信・継続稼働は未検証です。通常テストは180件成功・1件スキップです。repo引き渡し用セットアップも隔離環境で検証しています。[変更履歴](CHANGELOG.md)
+2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。別途構成した所有者限定SiteのMCP入口はOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。このrepoのMCP EventsによるYour dotとの往復、cloud computerでのBot受信・継続稼働・PC非依存の返信は未検証です。[クラウド移行の実測](docs/cloud-computer.md#cloudでの試験結果と残る確認)を参照してください。通常テストは180件成功・1件スキップです。repo引き渡し用セットアップも隔離環境で検証しています。[変更履歴](CHANGELOG.md)
 
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
