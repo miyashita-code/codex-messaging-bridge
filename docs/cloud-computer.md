@@ -15,7 +15,7 @@ private設定は `data/setup/dot-cloud/bridge.config.json`、`.env`、非秘密�
 
 公式のOpenAI Docsでは、dotに専用のcloud computerとbrowserがあり、利用者のPCがオフでもcloud workを続けられること、利用の間に状態を保持できること、ファイル・ソフトウェア・ブラウザセッションを持つことが説明されています。[Computers and apps](https://learn.chatgpt.com/docs/dots/computers-and-apps)
 
-一方、その文書は任意のNode.js daemonの常時稼働、休止中のWebSocket維持、外部から到達できる公開ポートや固定HTTPS URL、再起動時の自動起動を保証していません。これらが不可能と判明したわけではなく、今回の運用に使えるかは未確認です。状態を保存できる説明だけから、起動したBotプロセスも24時間動き続けると判断しません。
+一方、その文書は任意のNode.js daemonの常時稼働、休止中のWebSocket維持、外部から到達できる公開ポートや固定HTTPS URL、再起動時の自動起動を保証していません。今回の試験結果はcloudの実行環境ごとに異なり、必要な条件がすべて成立する構成はまだ確認できていません。状態を保存できる説明だけから、起動したBotプロセスも24時間動き続けると判断しません。
 
 ## アカウント設定だけlocal PCを使う
 
@@ -67,9 +67,19 @@ OpenAIのSecure MCP Tunnelは、private MCPへ外向きHTTPSだけで接続で�
 
 「自分のPCをオフにし、サーバーを一切用意せず、LINE / Discordの両方をYour dotだけで常時受信する」という条件を満たせるかは、今回確認した公式仕様だけでは判断できません。cloud側の実行条件・到達性・継続稼働を確認してから可否を判断します。Your dotの純正連絡方法として公式に案内されているのはChatGPT・通話・Slack・Teamsです。LINE / Discordはこのブリッジを介する追加経路です。[Message your dot](https://learn.chatgpt.com/docs/dots/channels)
 
-## Cloud computerに載せる前の実機確認
+Sitesの公式pluginには、Siteのnative MCP server、HTTP handler、D1を使う構成があり、移植先の候補です。公開仕様でもHTTP / HTTPS / WebSocketとD1が案内されています。[Sites](https://learn.chatgpt.com/docs/sites) ただし、通常のDiscord Gatewayの常駐とMCP Eventsの実購読は未検証です。privateなfrontdoorを用意しただけでは、受信プロセスの継続稼働や新着からのdot起動を確認したことにはなりません。
 
-cloud computer上での試験は、次を確認してから運用可否を判断します。まだこのアカウントのcloud computer上では実施していません。
+## Cloudでの試験結果と残る確認
+
+2026年10月14日に以下を調べました。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別taskは別の実行環境です。desktopのterminal実観測と、dot・別taskからの実行報告を分けて記録します。
+
+| 環境・証拠 | 準備・通信の結果 | 保存・継続の結果 |
+| --- | --- | --- |
+| dotのdesktop computer（terminal実観測） | Node.jsなし。GitHub、nodejs.org、DiscordへのHTTPS（443）接続が失敗。 | この環境ではブリッジ起動・常駐を未検証。 |
+| dot会話のcode runtime（dotの試験報告） | Node.js 24.19。v0.2.0（`32282a8`）をcloneし、setup planは `ready:false`。`cloud-check --probe` と未認証Discord WSSのHELLO受信は成功。 | private SQLiteを別の完了turn後に再読。background起動元のコマンド終了後にheartbeatが停止。公式cloudflaredのQuick TunnelはDNSのUDP接続が `network unreachable` で停止し、URLを発行できず。 |
+| 保存済みCloud environmentの別task（別taskの実行ログ） | Node.js 24.19、clone・setup plan成功（`ready:false`）。Discordは `EAI_AGAIN`、proxyのCONNECTは403、WSSは失敗。 | 同一processが完了turnをまたいで約95秒・19 heartbeat継続し、privateファイルの600権限を維持。環境の再起動をまたぐ復帰は未測定。 |
+
+未認証WSSのHELLO、設定生成、短時間のprocess継続は、Botの認証・実メッセージ受信・Your dotの返信・24時間稼働の証拠にはしません。既存localの実往復とgateway復帰の確認は、cloudでの往復やPC off時の稼働と区別します。**cloudでのLINE / Discord → Your dot → 同じ会話への返信と、local資源を使わない往復は未完了です。** 以下の条件を引き続き確認してから運用可否を判断します。
 
 1. Node.js 22.13以上とSQLiteを使えるか。ブリッジの設定・DBを再利用できる場所へ保存できるか。
 2. DiscordのWSS、各サービスのAPI、MCP Eventsのcallbackへ接続できるか。
