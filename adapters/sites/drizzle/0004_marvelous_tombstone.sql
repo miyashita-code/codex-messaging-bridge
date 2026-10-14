@@ -1,0 +1,1 @@
+ALTER TABLE `event_outbox` ADD `lease_token` text DEFAULT '' NOT NULL;

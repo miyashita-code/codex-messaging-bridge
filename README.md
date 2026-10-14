@@ -19,6 +19,10 @@ dotはcloudで動作条件を確認し、専用の非公開設定を準備しま
 
 `prepare` は `data/setup/dot-cloud/` に専用設定と進捗を作り、既存のBot設定を上書きしません。新規セットアップのペアリングコードは期限なしです。cloudの常駐・LINE用の安定したHTTPS・dotの実接続は別途確認します。これらが利用できない場合は不足条件を保存し、Mac上の動作をcloud移行完了として扱いません。
 
+## Sitesクラウド版（検証中）
+
+[Sites adapter](adapters/sites/README.md) は、LINEの公開受信・MCP Events・Discordのクラウド回収と再試行をWorker/D1で実装します。追加のhosting契約やOpenAI APIキーを使わず、既存のYour dotを接続するための構成です。クラウドの回収処理・復旧スケジュール・実際の自動返信は利用するアカウントで検証が必要です。
+
 ## 使い方を選ぶ
 
 | 構成 | 応答するAI | 公開HTTPS | 動作 |

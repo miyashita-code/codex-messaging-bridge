@@ -1,0 +1,1 @@
+ALTER TABLE `dm_contacts` ADD `authorized_at` integer DEFAULT 0 NOT NULL;

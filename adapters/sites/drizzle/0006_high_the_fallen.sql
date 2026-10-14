@@ -1,0 +1,1 @@
+ALTER TABLE `dm_contacts` ADD `delivery_status` text DEFAULT 'sent' NOT NULL;

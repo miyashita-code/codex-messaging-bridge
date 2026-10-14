@@ -1,0 +1,1 @@
+ALTER TABLE `event_subscriptions` ADD `started_at` integer DEFAULT 0 NOT NULL;

@@ -17,6 +17,7 @@
     "test": "node --test tests/*.test.mjs",
     "check": "node scripts/check.mjs",
     "package:cloud": "node scripts/package-cloud.mjs",
-    "test:codex-e2e": "node scripts/codex-e2e.mjs"
+    "test:codex-e2e": "node scripts/codex-e2e.mjs",
+    "test:sites": "node --test adapters/sites/tests/*.test.mjs"
   }
 }
