@@ -69,6 +69,8 @@ OpenAIのSecure MCP Tunnelは、private MCPへ外向きHTTPSだけで接続で�
 
 Sitesの公式pluginには、Siteのnative MCP server、HTTP handler、D1を使う構成があり、移植先の候補です。公開仕様でもHTTP / HTTPS / WebSocketとD1が案内されています。[Sites](https://learn.chatgpt.com/docs/sites) 所有者限定のSite上では、実HTTPリクエストの処理中にDiscordのHTTPSと未認証WSSのHELLO受信を確認しました。ただし、通常のDiscord Gatewayの常駐とMCP Eventsの実購読は未検証です。privateなfrontdoorを用意しただけでは、受信プロセスの継続稼働や新着からのdot起動を確認したことにはなりません。
 
+LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入口も必要です。所有者限定のSiteは認証を要求し、LINEのWebhook設定にはSiteのサービス認証ヘッダーやChatGPTへのログインを指定する契約がありません。private SiteのURLへの差し替えだけでは受信を確認できません。署名を検証する承認済みの公開入口、またはraw bodyと署名を保持してprivate側へ認証付き転送する経路を用意します。Siteの公開範囲や認証を自動で変更して、この条件を解消したことにはしません。[LINE Webhook](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)、[Webhook設定API](https://developers.line.biz/en/reference/messaging-api/nojs/#set-webhook-endpoint-url)
+
 ## Cloudでの試験結果と残る確認
 
 2026年10月14日に以下を調べました。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別task、SitesのWorkerは別の実行環境です。desktopのterminal実観測、dot・別taskからの実行報告、Siteへの実HTTPリクエストの計測を分けて記録します。
