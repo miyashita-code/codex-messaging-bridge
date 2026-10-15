@@ -1,6 +1,6 @@
 # Your dot の cloud computer とホスティング
 
-確認日: 2026年10月14日。**Your dot の cloud computer だけに置けば、LINE / Discord のブリッジを24時間運用できる、とは現時点で確認できません。** Discordは公開Webhookを省けます。LINEは公開HTTPSの受信先が必要です。AI秘書であるYour dotの稼働と、外部メッセージを受けるブリッジの稼働は別の要件です。
+確認日: 2026年10月15日。**Sites + Your dotで、Macの受信サービスを停止した実LINE / Discordメンションへの自動返信を確認しました。** 追加hosting契約やOpenAI APIキーは使っていません。受信はSitesのWorker/D1、AI応答はYour dotが担当します。任意のNode daemonをcloud computerに置く方式の24時間常駐は引き続き未検証です。
 
 リポジトリを渡してagentにセットアップを任せる入口は [`AGENTS.md`](../AGENTS.md) と[agentオンボーディング](agent-onboarding.md)です。cloudで設定を準備し、アカウント設定は接続済みlocal PCへ委譲し、cloudで実接続とPC独立性を確認する手順を用意しています。設定準備とcloud常駐の実証は分けて扱います。
 
@@ -25,9 +25,9 @@ localで設定したBotをcloudで動かすには、cloud runtimeにも必要な
 
 接続許可は残ってもPCがofflineの間はlocalの作業・serviceを利用できません。既存local taskは自動でcloudへ移動しません。PCの電源に依存しないBotを実現するには、受信・保存・返信のruntimeと必要な接続が実際にcloud側で成立している必要があります。[Local computer access](https://learn.chatgpt.com/docs/enterprise/cloud-local-access)
 
-## 現在のlocal構成と電源・再起動
+## 移行前のlocal構成と電源・再起動
 
-実メッセージの往復を確認済みの構成はmacOS上の個人用Codexです。LINE / DiscordのGatewayとCodex app-serverはlocalで動きます。LINEは公開HTTPS tunnel経由でlocal Webhookへ届きます。所有者限定SiteのMCPプラグインはインストール・OAuth接続を完了し、認証済みの状態取得を確認しました。Your dot側からも状態取得成功とイベントソースの表示が報告されています。イベント購読とcloudでの自動返信は未検証です。
+2026年10月14日までの実メッセージ検証はmacOS上の個人用Codex構成です。LINE / DiscordのGatewayとCodex app-serverはlocalで動きます。LINEは公開HTTPS tunnel経由でlocal Webhookへ届きます。所有者限定SiteのMCPプラグインはインストール・OAuth接続を完了し、認証済みの状態取得を確認しました。Your dot側からも状態取得成功とイベントソースの表示が報告されています。イベント購読とcloudでの自動返信は未検証です。
 
 この構成ではshutdown / sleep / network切断中に受信と返答が止まります。設定したLaunchAgentはログイン後にサービスを起動し、process停止時の復帰も行いますが、PCの電源off中に動くものではありません。実機ではGateway再起動後の承認・会話の継続を確認しており、macOS全体のreboot / loginをまたぐE2E試験とは区別します。配布repoだけでこのMacのprivate service設定が他のcomputerへコピーされることもありません。
 
@@ -51,6 +51,8 @@ GitHubからimportしたpluginが `mcp.json`等でMCP serverを宣言してい�
 
 ## 自分でサーバーを契約したくない場合
 
+Sitesが利用できるアカウントでは、[Sites adapter](../adapters/sites/README.md)を先に評価します。公開LINE WebhookとD1への保存、MCP EventsをSitesに置き、Discordは許可済み会話のREST回収を行います。cloud browserによる15秒間隔の回収と、利用可能なクラウドスケジュールによる復旧を組み合わせます。以下のCLI受信箱方式とは別です。
+
 Discordだけを個人用に使うなら、すでにあるコンピューターでGateway接続を動かすことで、Discord受信用の公開サーバー契約とドメインを省けます。`bridge.discord.cloud.example.json` は `backend: inbox`、`transport: headless` で、HTTPポートを開きません。Your dotが同じcomputerでCLIを使って受信箱を読み、同じ会話へ返信できます。OpenAI APIキーやMCPの公開先は使いません。ただし新着受信でYour dotを自動起動する機能はなく、Your dotが受信箱を確認するときに処理します。MCP Eventsによる自動起動を使う場合は、別途MCP接続の経路が必要です。CLIのセットアップでは、自動応答が不要な受信箱方式を選ぶときだけ `--channel discord --mode inbox` を明示します。
 
 Cloud computerへ持ち込むファイルは `npm run package:cloud` で生成できます。実際の `.env`、Bot token、稼働中DB、ローカル設定は含めません。展開後の流れは[Discord標準セットアップ](discord-setup.md)に記載しています。
@@ -67,13 +69,30 @@ OpenAIのSecure MCP Tunnelは、private MCPへ外向きHTTPSだけで接続で�
 
 「自分のPCをオフにし、サーバーを一切用意せず、LINE / Discordの両方をYour dotだけで常時受信する」という条件を満たせるかは、今回確認した公式仕様だけでは判断できません。cloud側の実行条件・到達性・継続稼働を確認してから可否を判断します。Your dotの純正連絡方法として公式に案内されているのはChatGPT・通話・Slack・Teamsです。LINE / Discordはこのブリッジを介する追加経路です。[Message your dot](https://learn.chatgpt.com/docs/dots/channels)
 
-Sitesの公式pluginには、Siteのnative MCP server、HTTP handler、D1を使う構成があり、移植先の候補です。公開仕様でもHTTP / HTTPS / WebSocketとD1が案内されています。[Sites](https://learn.chatgpt.com/docs/sites) 所有者限定のSite上では、実HTTPリクエストの処理中にDiscordのHTTPSと未認証WSSのHELLO受信を確認しました。ただし、通常のDiscord Gatewayの常駐とMCP Eventsの実購読は未検証です。privateなfrontdoorを用意しただけでは、受信プロセスの継続稼働や新着からのdot起動を確認したことにはなりません。
+Sitesの公式pluginには、Siteのnative MCP server、HTTP handler、D1を使う構成があり、移植先の候補です。公開仕様でもHTTP / HTTPS / WebSocketとD1が案内されています。[Sites](https://learn.chatgpt.com/docs/sites) 所有者限定のSite上では、実HTTPリクエストの処理中にDiscordのHTTPSと未認証WSSのHELLO受信を確認しました。通常のDiscord Gateway常駐は未検証です。10月15日にSites版のREST回収とMCP Events実購読・返信を確認した結果は次節に記載します。privateなfrontdoorを用意しただけでは、受信プロセスの継続稼働や新着からのdot起動を確認したことにはなりません。
 
 LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入口も必要です。所有者限定のSiteは認証を要求し、LINEのWebhook設定にはSiteのサービス認証ヘッダーやChatGPTへのログインを指定する契約がありません。private SiteのURLへの差し替えだけでは受信を確認できません。署名を検証する承認済みの公開入口、またはraw bodyと署名を保持してprivate側へ認証付き転送する経路を用意します。Siteの公開範囲や認証を自動で変更して、この条件を解消したことにはしません。[LINE Webhook](https://developers.line.biz/en/docs/messaging-api/receiving-messages/)、[Webhook設定API](https://developers.line.biz/en/reference/messaging-api/nojs/#set-webhook-endpoint-url)
 
+## Sitesでの移行検証（2026年10月15日）
+
+本人用Site-created pluginを接続し、LINE・Discord DM・Discordメンションの3種類のMCP Events購読を確認しました。LINE入口だけを署名検証付きで公開し、MCPと運用画面は本人認証を維持しています。必要なBot接続secretだけをSitesのprivate runtime設定へ移し、Codexログイン・cookie・会話DBは移していません。
+
+| 試験 | 実測結果 |
+| --- | --- |
+| LINE公開受信 | 公式Webhook Verify成功。MacのLINEサービスとtunnelを停止後、15:16の本人メッセージをSitesが受信・保存し、dotが自動起動。15:17に計算結果「437」と照合文字列を同じLINE会話へ返信。続く通常メッセージにも返信した。 |
+| Discordメンション | MacのDiscordサービスを15:22に未処理0件で停止。本人が15:42に送ったBotメンションをcloudが回収し、15:43にdotから同じ発言への返信を公式Discord APIで確認した。 |
+| 再配備 | secret、D1、購読を維持したままSites v13へ再配備成功。その後のDiscord実返信が成功した。 |
+| Mac再起動時の競合防止 | 実返信確認後、旧LINE / Discord LaunchAgentの自動起動も無効化。privateの復元手順と旧設定は保持した。Mac全体の再起動は実施していない。 |
+| 復旧処理 | MCP経由の `bridge_maintain` を実行してD1への実行記録を確認。browser tickとMCP実行を分けて記録する。 |
+| 復旧スケジュール | 試験アカウントでは5分間隔が「1時間に1回まで」と拒否され、毎時のクラウドスケジュールを保存。保存だけでは実行成功とせず、タブ停止後の実行・回収を別途検証する。 |
+
+Discordの高速回収はdotのcloud browserタブが開いている間に動きます。タブが閉じた場合の返信はスケジュールの頻度・実行遅延に影響され、常時即時返信を保証しません。LINEはタブが閉じてもWebhookで受信・保存し、受信処理から通知を試みます。通知失敗は永続キューに残り、復旧処理が再試行します。
+
+ここでのPC独立性試験は、**owned local受信サービス・tunnelを停止し、localhostの受信口を利用できなくした状態**です。物理的なPC電源断、Wi-Fi切断、24時間連続稼働とは区別します。Discord DMは購読準備済みで、移行後の実DM返信はまだ独立に検証していません。公開repoにはprivateのaccount ID・token・会話データを含めません。
+
 ## Cloudでの試験結果と残る確認
 
-2026年10月14日に以下を調べました。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別task、SitesのWorkerは別の実行環境です。desktopのterminal実観測、dot・別taskからの実行報告、Siteへの実HTTPリクエストの計測を分けて記録します。
+以下は2026年10月14日時点の調査記録です。現在のSites移行結果は前節を参照してください。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別task、SitesのWorkerは別の実行環境です。desktopのterminal実観測、dot・別taskからの実行報告、Siteへの実HTTPリクエストの計測を分けて記録します。
 
 | 環境・証拠 | 準備・通信の結果 | 保存・継続の結果 |
 | --- | --- | --- |
@@ -89,7 +108,7 @@ Sitesで最初に出た `TypeError` は、workerdの `fetch` で `redirect: 'err
 
 短時間のブラウザ試験では、最初のタブが結果回収前に自動終了しました。提供された `markHandoff` で試験タブを保持してやり直すと、上表の2回の接続結果を回収できました。これは公式のタブ保持操作による診断であり、ブラウザやプロセスの終了管理を変更していません。終了後は試験タブを閉じ、期間限定の診断経路を無効化しました。ブラウザを開いている間の接続成功だけから、管理された常駐サービスや再起動後の自動復旧が用意されたとは判断しません。
 
-未認証WSSのHELLO、設定生成、短時間のprocess継続は、Botの認証・実メッセージ受信・Your dotの返信・24時間稼働の証拠にはしません。既存localの実往復とgateway復帰の確認は、cloudでの往復やPC off時の稼働と区別します。**cloudでのLINE / Discord → Your dot → 同じ会話への返信と、local資源を使わない往復は未完了です。** 以下の条件を引き続き確認してから運用可否を判断します。
+未認証WSSのHELLO、設定生成、短時間のprocess継続は、Botの認証・実メッセージ受信・Your dotの返信・24時間稼働の証拠にはしません。既存localの実往復とgateway復帰の確認は、cloudでの往復やPC off時の稼働と区別します。**この10月14日時点ではcloud実往復は未完了でした。** 10月15日のSites実往復とは分け、Node daemon方式を新たに選ぶ場合は次の条件を引き続き確認します。
 
 1. Node.js 22.13以上とSQLiteを使えるか。ブリッジの設定・DBを再利用できる場所へ保存できるか。
 2. DiscordのWSS、各サービスのAPI、MCP Eventsのcallbackへ接続できるか。

@@ -19,9 +19,9 @@ dotはcloudで動作条件を確認し、専用の非公開設定を準備しま
 
 `prepare` は `data/setup/dot-cloud/` に専用設定と進捗を作り、既存のBot設定を上書きしません。新規セットアップのペアリングコードは期限なしです。cloudの常駐・LINE用の安定したHTTPS・dotの実接続は別途確認します。これらが利用できない場合は不足条件を保存し、Mac上の動作をcloud移行完了として扱いません。
 
-## Sitesクラウド版（検証中）
+## Sitesクラウド版
 
-[Sites adapter](adapters/sites/README.md) は、LINEの公開受信・MCP Events・Discordのクラウド回収と再試行をWorker/D1で実装します。追加のhosting契約やOpenAI APIキーを使わず、既存のYour dotを接続するための構成です。クラウドの回収処理・復旧スケジュール・実際の自動返信は利用するアカウントで検証が必要です。
+[Sites adapter](adapters/sites/README.md) は、LINEの公開受信・MCP Events・Discordのクラウド回収と再試行をWorker/D1で実装します。追加のhosting契約やOpenAI APIキーを使わず、既存のYour dotを接続するための構成です。2026-10-15に、MacのLINE / Discord受信サービスを停止した状態で、実LINEメッセージと実DiscordメンションからYour dotが自動返信することを確認しました。LINEは公開Webhookで直接受信し、Discordはdotのcloud browserから15秒ごとに回収します。受信タブが閉じた場合の回収・再試行用クラウドスケジュールは保存済みで、停止後の自動返信・復旧は検証を継続しています。試験アカウントでは毎時実行が上限でした。復旧の実測と制約は[クラウド移行記録](docs/cloud-computer.md#sitesでの移行検証2026年10月15日)を参照してください。各利用者のSites利用権限・接続・購読を個別に確認します。
 
 ## 使い方を選ぶ
 
@@ -124,7 +124,7 @@ CODEX_E2E=1 npm run test:codex-e2e
 
 2026-10-13にmacOSで実Discord Botと既存Codexログインを接続し、サーバーのメンションからのAI返信、DMの初回ペアリングと承認後のAI返信、プロセス再起動後の同一会話の継続を確認しました。LaunchAgentでの常駐運転へ切り替えた後も実返信を確認しています。
 
-2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。別途構成した所有者限定SiteのMCP入口はOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。このrepoのMCP EventsによるYour dotとの往復、cloud computerでのBot受信・継続稼働・PC非依存の返信は未検証です。[クラウド移行の実測](docs/cloud-computer.md#cloudでの試験結果と残る確認)を参照してください。通常テストは180件成功・1件スキップです。repo引き渡し用セットアップも隔離環境で検証しています。[変更履歴](CHANGELOG.md)
+2026-10-14には実LINE Botで初回ペアリングを承認し、本人のLINE入力からCodexの実推論を経て、同じLINE会話へ「LINE実機E2E成功」が届くことを確認しました。期限なしの設定を反映するGateway再起動後も承認済み接続と会話を維持し、前の会話で伝えた内容を再入力せずに返答できることを確認しています。LINEの受信には公開HTTPS Webhookを使用しています。これらはmacOSの個人用Codex経路の実通信検証です。別途構成した所有者限定SiteのMCP入口はOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。2026-10-15にはSites版で、ローカル受信サービスを停止した状態のLINE / Discordメンション → Your dot → 同じ会話への返信も成功しました。これは物理的なPC電源断や24時間連続運転の試験とは区別します。[クラウド移行の実測](docs/cloud-computer.md#cloudでの試験結果と残る確認)を参照してください。通常テストは181件成功・1件スキップです。repo引き渡し用セットアップも隔離環境で検証しています。[変更履歴](CHANGELOG.md)
 
 持ち込み用アーカイブは `npm run package:cloud` で `data/codex-messaging-bridge-cloud.tar.gz` に生成します。実 `.env`、ローカル設定、認証情報、稼働中DBを含めません。
 
@@ -153,7 +153,7 @@ Approved connections remain stored until explicitly revoked. Set the channel or 
 
 Discord Gateway needs an active process but no public webhook or domain. For **Your dot without a public endpoint**, keep `backend: "inbox"`; your dot reads and replies through the CLI on the same computer. This inbox mode does not wake your dot when a message arrives. For **Your dot MCP Events**, use `backend: "dot"`, an HTTPS MCP endpoint, OAuth and event subscriptions. LINE always needs an HTTPS webhook receiver. Continuous operation on your dot's cloud computer has not been verified.
 
-Live Discord and LINE exchanges with personal Codex on macOS have passed. Discord testing includes mentions, DM pairing and replies, and conversation continuity after switching to LaunchAgent. LINE testing includes pairing, an actual user message through Codex to a reply in the same conversation, and retention of approval and conversation context after restarting the gateway with no-expiry codes configured. Your dot MCP and cloud computer live connections remain unverified. See the [changelog](CHANGELOG.md).
+Live Discord and LINE exchanges with personal Codex on macOS have passed. Discord testing includes mentions, DM pairing and replies, and conversation continuity after switching to LaunchAgent. LINE testing includes pairing, an actual user message through Codex to a reply in the same conversation, and retention of approval and conversation context after restarting the gateway with no-expiry codes configured. On 2026-10-15, the Sites adapter also passed real LINE and Discord mention → Your dot → same-conversation reply tests with both local receivers stopped. This is distinct from a physical laptop power-off or 24-hour uptime test. Discord fast polling uses the dot cloud browser; scheduled recovery is subject to the account’s cadence limit (hourly in the tested account). See the [changelog](CHANGELOG.md).
 
 See the [installation and profile guide](docs/install.md#english-installation-guide), [Discord setup](docs/discord-setup.md), [LINE setup](docs/line-setup.md) and [Your dot integration](docs/dot-integration.md). Each user supplies their own credentials. Local Codex app-server login is for local / open-source use, subject to [OpenAI's authentication conditions](https://learn.chatgpt.com/docs/app-server).
 

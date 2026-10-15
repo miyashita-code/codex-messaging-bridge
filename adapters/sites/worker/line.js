@@ -57,6 +57,7 @@ export async function lineWebhook(req,env,events,ctx){
 async function send(env,path,body,retryKey){
  let r;try{r=await (env.LINE_FETCH||fetch)('https://api.line.me/v2/bot/message/'+path,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(12000),headers:{'content-type':'application/json',authorization:'Bearer '+await currentLineToken(env),...(retryKey?{'X-Line-Retry-Key':retryKey}:{})},body:JSON.stringify(body)});}catch{fail('LINE_WRITE_OUTCOME_UNKNOWN',502);}
  if(r.redirected||r.status>=300&&r.status<400)fail('LINE_WRITE_OUTCOME_UNKNOWN',502);
+ if(r.status===429){const e=new LineFault('LINE_HTTP_429',502);const seconds=Number(r.headers.get('retry-after'));e.retryAfterMs=Number.isFinite(seconds)&&seconds>0?Math.min(seconds*1000,86400000):0;throw e;}
  if(r.status===409&&retryKey&&r.headers.get('x-line-accepted-request-id'))return {accepted:true};
  if(!r.ok){if(r.status===400&&path==='reply'){const b=await r.json().catch(()=>({}));if(b.message==='Invalid reply token')return {expired:true};}fail(r.status>=500?'LINE_WRITE_OUTCOME_UNKNOWN':'LINE_HTTP_'+r.status,502);}
  return {accepted:true};
@@ -67,14 +68,53 @@ export async function lineCall(name,args,env){
  if(name!=='line_reply')fail('UNKNOWN_TOOL');
  if(env.LINE_ENABLE_REPLIES!=='true')fail('LINE_REPLIES_DISABLED',403);
  if(typeof args.content!=='string'||!args.content.trim()||args.content.length>5000)fail('INVALID_TEXT');
- const key='linereply:'+row.event_id,retryKey=crypto.randomUUID();
+ const key='linereply:'+row.event_id,recordKey='line_reply_retry:'+row.event_id;
+ let retryKey=crypto.randomUUID(),attempts=1;
  const r=await run(env,'INSERT OR IGNORE INTO actions (action_key,kind,source_id,recipient_id,status,result_id,created_at) VALUES (?,?,?,?,?,?,?)',key,'linereply',row.event_id,row.user_id,'reserved',retryKey,Date.now());
- if(!r.meta?.changes){const old=await first(env,'SELECT status FROM actions WHERE action_key = ?',key);return {duplicate:true,status:old.status};}
+ if(!r.meta?.changes){
+  const old=await first(env,'SELECT status,result_id FROM actions WHERE action_key = ?',key);
+  if(old.status!=='retryable')return {duplicate:true,status:old.status};
+  const stored=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',recordKey);
+  if(!stored)fail('LINE_RETRY_RECORD_MISSING',503);
+  const pending=await codec.unseal(env,stored.value,recordKey);
+  if(pending.content!==args.content)fail('LINE_REPLY_CONTENT_CONFLICT',409);
+  if(pending.nextAttemptAt>Date.now())return {status:'retryable',retry_after_ms:pending.nextAttemptAt-Date.now(),event_id:row.event_id};
+  const claimed=await run(env,"UPDATE actions SET status='reserved' WHERE action_key=? AND status='retryable'",key);
+  if(!claimed.meta?.changes)return {duplicate:true,status:'reserved'};
+  retryKey=old.result_id;attempts=pending.attempts+1;
+ }
  try{
   const messages=[{type:'text',text:args.content}];
   let result=m.replyToken&&Date.now()-row.created_at<50000?await send(env,'reply',{replyToken:m.replyToken,messages}):{expired:true};
   if(result.expired)result=await send(env,'push',{to:row.user_id,messages},retryKey);
   await run(env,"UPDATE actions SET status='completed' WHERE action_key=?",key);
+  await run(env,'DELETE FROM bridge_runtime WHERE key=?',recordKey);
   return {status:'completed',event_id:row.event_id};
- }catch(e){await run(env,'UPDATE actions SET status=? WHERE action_key=?',e.code==='LINE_WRITE_OUTCOME_UNKNOWN'?'unknown':'failed',key);throw e;}
+ }catch(e){
+  // Only an explicit 429 proves that this attempt was rejected. Ambiguous
+  // transport/5xx writes remain unknown and must never be blindly repeated.
+  const retryable=e.code==='LINE_HTTP_429'&&attempts<8;
+  if(retryable){
+   const nextAttemptAt=Date.now()+Math.max(e.retryAfterMs||0,Math.min(3600000,30000*2**(attempts-1)));
+   const sealed=await codec.seal(env,{content:args.content,attempts,nextAttemptAt},recordKey);
+   await run(env,'INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',recordKey,sealed,Date.now());
+  }
+  await run(env,'UPDATE actions SET status=? WHERE action_key=?',retryable?'retryable':e.code==='LINE_WRITE_OUTCOME_UNKNOWN'?'unknown':'failed',key);
+  throw e;
+ }
+}
+export async function retryCloudLineReplies(env){
+ if(!lineConfigured(env)||env.LINE_ENABLE_REPLIES!=='true')return {retried:0,completed:0};
+ const rows=(await env.DB.prepare("SELECT source_id FROM actions WHERE kind='linereply' AND status='retryable' ORDER BY created_at LIMIT 5").bind().all()).results;
+ let retried=0,completed=0;const failures=[];
+ for(const row of rows){
+  const key='line_reply_retry:'+row.source_id,stored=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',key);
+  if(!stored){failures.push('LINE_RETRY_RECORD_MISSING');continue;}
+  const pending=await codec.unseal(env,stored.value,key);
+  if(pending.nextAttemptAt>Date.now())continue;
+  retried++;
+  try{const result=await lineCall('line_reply',{event_id:row.source_id,content:pending.content},env);if(result.status==='completed')completed++;}
+  catch(e){if(e instanceof LineFault)failures.push(e.code);else throw e;}
+ }
+ return {retried,completed,...(failures.length?{failures}:{})};
 }

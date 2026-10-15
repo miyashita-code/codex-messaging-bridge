@@ -73,7 +73,25 @@ function identityParams(params,env,withSecret=false){
 function matches(args,data){return args.guild_id===data.guild_id&&(!args.channel_ids?.length||args.channel_ids.includes(data.channel_id))&&(!args.mentions_only||data.mentions_bot);}
 export function eventService(deps){
  const {authenticate,requireConfig,source,dmSource,honorDmStop,backfillChannels,channel,dbRun,dbFirst,lineSource,requireLine}=deps;
- const checkEvents=(env,name)=>{if(env.BRIDGE_RUNTIME==='cloud'&&(!name||name===LINE_EVENT_NAME)){requireLine(env);if(env.LINE_ENABLE_EVENTS!=='true')throw new EventError('EVENTS_DISABLED',-32000);}else{requireConfig(env);if(env.DISCORD_ENABLE_EVENTS!=='true')throw new EventError('EVENTS_DISABLED',-32000);}};
+ const checkEvents=(env,name)=>{
+  if(env.BRIDGE_RUNTIME==='cloud'&&!name){
+   // A recovery tick may serve either channel. An absent or broken optional
+   // channel must not prevent delivery for the other configured channel.
+   let configurationError;
+   for(const [event,enabled] of [[LINE_EVENT_NAME,env.LINE_ENABLE_EVENTS],[EVENT_NAME,env.DISCORD_ENABLE_EVENTS]]){
+    if(enabled!=='true')continue;
+    try{checkEvents(env,event);return;}catch(e){configurationError??=e;}
+   }
+   throw configurationError||new EventError('EVENTS_DISABLED',-32000);
+  }
+  if(env.BRIDGE_RUNTIME==='cloud'&&name===LINE_EVENT_NAME){
+   if(env.LINE_ENABLE_EVENTS!=='true')throw new EventError('EVENTS_DISABLED',-32000);
+   requireLine(env);
+  }else{
+   if(env.DISCORD_ENABLE_EVENTS!=='true')throw new EventError('EVENTS_DISABLED',-32000);
+   requireConfig(env);
+  }
+ };
  const all=async(env,sql,...v)=>(await env.DB.prepare(sql).bind(...v).all()).results||[];
  async function subscribed(method,params,req,env){
   const principal=authenticate(req,env,method==='events/list');
@@ -165,6 +183,7 @@ export function eventService(deps){
    const lease=await dbFirst(env,"UPDATE event_outbox SET lease_until = ?, lease_token = ?, attempts = attempts + 1 WHERE id = ? AND status = 'pending' AND lease_until < ? AND next_attempt_at <= ? AND attempts < 8 RETURNING attempts",now+120000,leaseToken,item.id,now,now);if(!lease)continue;
    let status='pending',retryAt=Date.now()+Math.min(3600e3,1000*2**Math.min(lease.attempts,12));
    try{
+    checkEvents(env,item.name);
     const data=JSON.parse(item.data_json);const {m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(env,{channel_id:data.channel_id,message_id:data.message_id});if(item.name===DM_EVENT_NAME&&await honorDmStop(env,m)){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
     if(item.name===DM_EVENT_NAME){const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',data.author_id);if(pref?.blocked&&Date.parse(item.occurred_at)<=pref.updated_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}}
     const current=await dbFirst(env,'SELECT * FROM event_subscriptions WHERE id = ?',item.subscription_id);
@@ -173,7 +192,7 @@ export function eventService(deps){
     const response=await signedDelivery(env,{id:item.subscription_id},delivery,{eventId:item.event_id,name:item.name,timestamp:item.occurred_at,data,cursor:null});
     if(response.status>=200&&response.status<300){status='delivered';delivered++;await dbRun(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('event_callback_accepted','ok',?) ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",Date.now());}
     else if(![408,425,429].includes(response.status)&&response.status<500){status='dead';if(response.status===410)await dbRun(env,'UPDATE event_subscriptions SET active = 0, operation_id = ?, updated_at = ? WHERE id = ? AND operation_id = ?',crypto.randomUUID(),Date.now(),current.id,current.operation_id);}
-   }catch(e){if(e instanceof EventError&&e.message==='CALLBACK_TRANSPORT_REDIRECT_DENIED')status='dead';else if(['DISCORD_403','DISCORD_404','GUILD_NOT_ALLOWED','CHANNEL_NOT_ALLOWED','BOT_LOOP_BLOCKED','SOURCE_MISMATCH','SUBSCRIPTION_UNAVAILABLE','DM_CHANNEL_NOT_ALLOWED','DM_RECIPIENT_MISMATCH','DM_SOURCE_MISMATCH','DM_SOURCE_TOO_OLD'].includes(e.code||e.message))status='cancelled';}
+   }catch(e){if(e instanceof EventError&&e.message==='CALLBACK_TRANSPORT_REDIRECT_DENIED')status='dead';else if(['EVENTS_DISABLED','DISCORD_403','DISCORD_404','GUILD_NOT_ALLOWED','CHANNEL_NOT_ALLOWED','BOT_LOOP_BLOCKED','SOURCE_MISMATCH','SUBSCRIPTION_UNAVAILABLE','DM_CHANNEL_NOT_ALLOWED','DM_RECIPIENT_MISMATCH','DM_SOURCE_MISMATCH','DM_SOURCE_TOO_OLD'].includes(e.code||e.message))status='cancelled';}
    if(lease.attempts>=8&&status==='pending')status='dead';
    await dbRun(env,'UPDATE event_outbox SET status = ?, next_attempt_at = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?',status,retryAt,Date.now(),item.id,leaseToken);
   }

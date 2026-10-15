@@ -1,4 +1,4 @@
-# Your dot と LINE の接続
+# Your dot と LINE / Discord の接続
 
 repoをdotへ渡してセットアップを任せる場合は、[AGENTS.md](../AGENTS.md) と [エージェント用セットアップ](agent-onboarding.md) から始めます。cloudの準備と接続済みPCでのアカウント設定を分け、既存のローカルBotを維持しながら切り替えを検証します。
 
@@ -10,7 +10,21 @@ Discordも同じMCP endpointで使えます。イベントは `discord.message.c
 
 公式の[MCP Events](https://developers.openai.com/plugins/build/mcp-events)はdotsに対応しています。MCP 2.0 `2026-07-28` のイベント購読後、ChatGPTが指定した署名付きWebhookへ配信し、購読先の会話で設定済みの処理を実行する仕組みです。この経路を使うため、OpenAI APIキーやCodexのログイントークンをブリッジへ渡す必要はありません。接続には利用者のChatGPTアカウント、Your dot、カスタムMCP接続が使える権限が必要です。
 
-## 接続の流れ
+## Sites版の接続
+
+追加hosting契約なしでSitesを使う場合は、[adapterの配備手順](../adapters/sites/README.md)に従います。以下のNode版OAuthサーバーとは別の実装で、認証はSites-created pluginの本人接続を使います。実際に発見されたツールとイベントschemaを優先します。
+
+| Sitesイベント | 購読フィルター | 読取 → 同じ会話への返信 |
+| --- | --- | --- |
+| `line.message.created` | `{}`。サーバー側の確認済み送信者allowlistを適用 | `line_message_read({event_id})` → `line_reply({event_id, content})` |
+| `discord.dm.message.created` | 設定済み `guild_id` と本人DMの `channel_ids` | `discord_dm_message_read({channel_id, message_id})` → `discord_reply_dm({channel_id, message_id, content})` |
+| `discord.message.created` | 設定済み `guild_id`、`channel_ids`、`mentions_only: true` | `discord_message_read({channel_id, message_id})` → `discord_reply_to_mention({channel_id, message_id, content})` |
+
+返信先は元メッセージへ固定され、永続化した返信キーで重複を抑止します。本人からのイベント本文を読んでdot自身が応答し、無関係な会話の非公開情報を混ぜないよう指示します。カタログ更新後はpluginを再スキャンし、購読・challenge・実返信を確認します。`bridge_maintain({})` は回収・未配信再試行・期限付きLINE tokenの更新を行い、モデル推論は実行しません。
+
+2026-10-15にSites版の実LINE / Discordメンションへの自動返信を、Mac受信サービス停止中に確認しました。Node版のcloud常駐検証へ読み替えず、利用者ごとに同じ試験を行います。
+
+## Node版の接続の流れ
 
 1. READMEの手順でLINEチャネル、HTTPS公開URL、管理者接続パスフレーズを設定し、`backend: "dot"` でブリッジを起動します。HTTPSリバースプロキシから `/mcp`、`/.well-known/`、`/oauth/`、LINE Webhookの各パスを転送します。
 2. LINE Botにメッセージを送り、CLIでペアリングを承認します。グループはグループと送信者の許可設定も行います。`line_list_conversations` は受信済みで許可された会話だけを返します。
@@ -72,4 +86,4 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 
 `backend: "codex"` は、このMacの既存Codexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。提供するサービスでは標準のYour dot + MCP Events経路を使い、ローカルCodex代替を商用認証として扱わないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
-この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。この実装からの実際のイベント購読・Your dotの自動返信・cloud computerでの運用は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。
+この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。Sites版では2026-10-15に実購読とYour dotのLINE / Discordメンションへの自動返信をローカル受信停止中に確認しました。Node版のcloud daemon常駐は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。

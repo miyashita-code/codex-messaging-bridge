@@ -2,7 +2,7 @@
 
 このリポジトリをYour dotへ渡すときの入口は、ルートの [`AGENTS.md`](../AGENTS.md) です。Codexはこの名前のファイルを作業開始前に読みます。Your dotへ渡す際も、以下の指示で明示的に読ませます。[公式のAGENTS.md案内](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
 
-目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。セットアップの案内と設定生成を同梱していますが、Your dot cloud computerでの常駐・公開HTTPS・実イベント購読はまだ実機確認していません。環境の制約で実現できない部分を、完了と表示するための手順ではありません。
+目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。Sites版では、2026-10-15にローカル受信サービスを停止した実LINE / DiscordメンションへのYour dot自動返信を確認しました。任意のNode daemonをcloud computerに置く方式とは分け、各利用者の環境で復旧・購読・実返信まで検証します。
 
 ## そのまま渡せる依頼
 
@@ -43,6 +43,17 @@ local Codexから始める場合、通常のChatGPT web画面を操作できる�
 3. 画面上の **Your dot** から利用者の対象dotを選び、profile → **Computers → Open computer → Take over** と進みます。表示されていないdeep linkや内部APIは推測しません。cookieやloginファイルをコピーしません。本人のsign-in等が必要になった場合は、そのtoolのprivate handoff規則に従います。
 
 profileからcloud computerを開き、`Take over` で操作し、作業をdotへ戻すときに `Return control` を選ぶ流れは公式に案内されています。画面を開けたことは、Node・外向き通信・常駐・実メッセージ往復の成功を意味しません。引き続き以下の実行条件を確認します。[Computers and apps](https://learn.chatgpt.com/docs/dots/computers-and-apps)
+
+## hosting契約を増やさない場合はSitesを先に評価する
+
+Sitesが利用できる場合、[Sites adapter](../adapters/sites/README.md)のnative Site・plugin・D1・クラウドスケジュールの手順を使います。以下のNode用 `setup plan` / `setup prepare` は計画と再開状態の準備であり、Sitesを作成・公開するコマンドではありません。Sitesの実行コードとschemaは `adapters/sites/` にあります。
+
+1. 利用者の既存Siteがあれば再利用し、なければSitesの正規手順で作成します。作者のSite IDや接続先をコピーしません。
+2. 必要なBot secretと確認済み送信者だけをprivate runtime settingsへ設定し、Site-created pluginを本人のdotへ接続します。
+3. [Sites固有のMCP schema](dot-integration.md#sites版の接続)で購読します。Node版のツール名・引数と混ぜません。
+4. LINEの公開受信口、Discordのcloud回収、nativeクラウド復旧スケジュールを用意します。実アカウントの実行頻度制限を確認し、複数のずらしたscheduleで回避しません。
+5. 既存local受信を協調停止し、各channelの実返信を検証します。成功したchannelだけ旧serviceの自動起動も無効にし、再起動時のWebhook奪い返し・二重返信を防ぎます。rollbackには再有効化も含めます。
+6. 受信タブを閉じた後の復旧を実行履歴・永続記録・実返信で確認します。schedule保存やbrowser timerだけを常駐の証拠にしません。
 
 ## 1. Cloudで計画とprivate設定を準備する
 
@@ -110,7 +121,7 @@ agentは利用環境に実在する接続・委譲toolを使います。手順�
 
 [LINE標準セットアップ](line-setup.md)に沿って、LINE Business IDと公式アカウントを用意し、[Official Account Manager](https://manager.line.biz/)でMessaging APIを有効にします。[LINE Developers Console](https://developers.line.biz/console/)で対象Provider / channelを開きます。Providerは固定されるため、既存の対象を確認して選びます。
 
-取得する接続情報は対象channelのaccess tokenとchannel secretです。cloud側の安全な受信先が準備できた後、Webhook URLを設定し、VerifyとUse webhook、再送、応答設定を確認します。実ユーザーが友だち追加して送信する初回ペアリングを確認します。Verifyの成功はAI返信の検証ではありません。[LINE公式の作成手順](https://developers.line.biz/en/docs/messaging-api/getting-started/)
+取得する接続情報は対象channelのaccess tokenとchannel secretです。cloud側の安全な受信先が準備できた後、Webhook URLを設定し、VerifyとUse webhook、再送、応答設定を確認します。Node版では実ユーザーが友だち追加して送信する初回ペアリングを確認します。Sites版はコードを発行せず `LINE_ALLOWED_USER_IDS` の本人allowlistを使うため、[Sitesの本人照合手順](../adapters/sites/README.md#verify-the-line-owner-before-enabling-intake)を先に完了し、その後に新規メッセージを送ります。Verifyの成功はAI返信の検証ではありません。[LINE公式の作成手順](https://developers.line.biz/en/docs/messaging-api/getting-started/)
 
 ### Discord
 
@@ -166,7 +177,7 @@ node --env-file=data/setup/dot-cloud/.env -- src/cli.mjs --config data/setup/dot
 4. signed callback challengeが成功し、購読が保存される。
 5. 新規実メッセージがeventとして届けられ、Your dotが読み、同じ会話へreply toolで返す。
 
-ペアリングは、実アプリ等で本人の送信と照合できたowner / 許可済みtest senderのコードだけを承認します。未承認の一覧を一括で許可しません。必要な場合は同じruntime設定で次を使います。
+以下のペアリングコマンドはNode版向けです。Sites版のallowlistはこのCLIでは更新されません。ペアリングは、実アプリ等で本人の送信と照合できたowner / 許可済みtest senderのコードだけを承認します。未承認の一覧を一括で許可しません。必要な場合は同じruntime設定で次を使います。
 
 ```bash
 node --env-file=data/setup/dot-cloud/.env -- src/cli.mjs --config data/setup/dot-cloud/bridge.config.json pairing list line

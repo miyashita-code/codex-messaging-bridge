@@ -3,6 +3,9 @@ name: setup-line-secretary
 description: Connect this LINE bridge to Your dot and establish an explicitly scoped LINE message event subscription using its installed MCP tools.
 ---
 
+First inspect the installed tool schema. If this is the Sites adapter (it exposes `line_message_read`), use the Sites section of [the integration guide](../../../docs/dot-integration.md#sites版の接続) in the repository instead of the Node tool names below. If only the plugin is installed, read that section from the owner-selected repository revision. Do not assume the two implementations share subscription filters or reply arguments.
+
+
 Use the connected LINE AI秘書 MCP tools to establish a subscription for the owner. This bridge does not expose a generic API for posting messages into Your dot. It exposes `line.message.created` events and controlled LINE reply tools.
 
 Call `line_list_conversations` and select the conversation the owner requested. Each subscription needs the returned `accountId` and `conversationId`; an optional `user_id` filter narrows it to one admitted sender. If there are no conversations, continue the repository's connected-computer setup workflow to send an authorized test message and approve its matching code when supported tools are available. Verify that it came from the owner's intended account; never approve all pending senders. A manual handoff is needed only for a step the available tools cannot perform or that requires the owner under their rules. Do not broaden the LINE allowlist or request credentials in chat.

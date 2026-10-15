@@ -3,6 +3,9 @@ name: setup-discord-secretary
 description: Connect the bridge's Discord MCP tools to Your dot and establish an explicitly scoped Discord message-event subscription.
 ---
 
+First inspect the installed tool schema. If this is the Sites adapter (it exposes `discord_dm_message_read`), use the Sites section of [the integration guide](../../../docs/dot-integration.md#sites版の接続) in the repository instead of the Node tool names below. If only the plugin is installed, read that section from the owner-selected repository revision. Do not assume the two implementations share subscription filters or reply arguments.
+
+
 Use `discord_list_conversations` to select the owner's intended account and conversation. Subscribe through the platform to `discord.message.created` with the returned `accountId` and `conversationId`, optionally narrowing to one `user_id`. Do not invent a model tool named `events/subscribe`. Confirm the platform actually created the subscription before describing it as active.
 
 For a new bot with no admitted conversation, use the repository's connected-computer setup workflow to send an authorized test DM and approve only the matching code from the owner's intended account. Continue permitted setup steps yourself; request a manual handoff only where the active tools require the owner or cannot perform the step. Do not approve unrelated pending senders or expand the allowlist.

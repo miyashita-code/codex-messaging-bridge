@@ -7,6 +7,7 @@ mkdirSync(resolve(root,'data'),{recursive:true,mode:0o700});
 const target=resolve(root,'data/codex-messaging-bridge-cloud.tar.gz');
 // Explicit allowlist: never package the active .env, local config, receipts or authentication files.
 const files=['package.json','package-lock.json','README.md','CHANGELOG.md','AGENTS.md','agent.md','LICENSE','.env.example','bridge.config.example.json','bridge.discord.example.json','bridge.discord.cloud.example.json','src','bin','scripts','docs','deploy','plugin','tests'];
+for(const entry of ['README.md','package.json','drizzle.config.ts','.openai/hosting.json','db','drizzle','worker','scripts','tests'])files.push(`adapters/sites/${entry}`);
 const work=mkdtempSync(resolve(root,'data/.cloud-package-'));
 const stage=join(work,'source'),archive=join(work,'archive.tar.gz');
 const excluded=name=>name==='.DS_Store' || name.startsWith('._') || (name.startsWith('.env') && name!=='.env.example') || name==='bridge.config.json' || /\.sqlite.*$|\.log$/.test(name);
@@ -18,6 +19,7 @@ function copySource(relative) {
     for(const name of readdirSync(source).sort())if(!excluded(name))copySource(join(relative,name));
     chmodSync(destination,0o755);utimesSync(destination,0,0);
   } else if(info.isFile()) {
+    mkdirSync(dirname(destination),{recursive:true,mode:0o755});
     copyFileSync(source,destination);chmodSync(destination,info.mode & 0o111?0o755:0o644);utimesSync(destination,0,0);
   } else throw new Error(`Refusing to package a special file: ${relative}`);
 }

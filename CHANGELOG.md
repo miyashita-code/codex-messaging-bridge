@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — 2026-10-15
+
+- Fix empty-argument MCP tool validation so cloud recovery can execute through the installed plugin. Persist separate MCP maintenance evidence and provide an owner-only LINE inbox using the same deduplicated reply path.
+- Isolate Discord channel and LINE token failures so other channels and pending callbacks keep recovering. Retry explicit LINE 429 rejections from encrypted state with the original reply content, fixed recipient and push retry key; ambiguous sends remain review-only. Fix Discord-only cloud maintenance so it does not require LINE credentials.
+- Include the Sites adapter in the cloud handoff archive and document its distinct event/tool schemas, account-specific recovery cadence, cutover and local autostart rollback.
+- Verify actual LINE and Discord mention replies from Your dot while both Mac receivers are stopped. Redeploy the Site with D1/subscriptions preserved; disable the old owned LaunchAgents after successful per-channel cutover. Physical laptop power-off and continuous 24-hour uptime are separate, unperformed tests.
+
 ## 0.2.0 — 2026-10-14
 
 - Add `AGENTS.md` and a repository handoff guide so an agent can prepare the dot cloud runtime, use a connected local computer for account setup, resume interrupted work, and verify the real reply path before declaring migration complete.

@@ -1,3 +1,4 @@
+import {cloudInbox} from './cloud-inbox.js';
 import { maintainTool, maintainCloud, cloudRuntimePage, cloudRuntimeStatus } from './cloud-runtime.js';
 import { lineWebhook, lineTools, lineCall, lineConfigured, lineSource, requireLine, LineFault } from './line.js';
 import { proxyMcp, proxyConfigured } from './proxy.js';
@@ -145,7 +146,7 @@ async function stableNonce(key){const digest=await crypto.subtle.digest('SHA-256
 async function sendMessage(env,channelId,content,key,extra={}){const r=await discord(env,`/channels/${sid(channelId)}/messages`,'POST',{...messagePayload(content,await stableNonce(key)),...extra});if(r.channel_id!==channelId||!ID.test(r.id))throw new Fault('DISCORD_WRITE_OUTCOME_UNKNOWN',502);return r;}
 const messagePayload=(content,nonce)=>({content,allowed_mentions:{parse:[],replied_user:false},nonce,enforce_nonce:true});
 async function callTool(name,a,req,env){
- if(env.BRIDGE_RUNTIME==='cloud'&&name==='bridge_maintain'){authenticate(req,env);return maintainCloud(env,{discord,events,configured});}
+ if(env.BRIDGE_RUNTIME==='cloud'&&name==='bridge_maintain'){authenticate(req,env);return maintainCloud(env,{discord,events,configured,source:'mcp'});}
  if(env.BRIDGE_RUNTIME==='cloud'&&name.startsWith('line_')){authenticate(req,env);return lineCall(name,a,env);}
  if(name==='bridge_status'){
   const who=authenticate(req,env,true);const runtime=typeof env.RUNTIME_STATUS==='function'?env.RUNTIME_STATUS():{};const subscribed=env.DB?await dbFirst(env,'SELECT COUNT(*) AS n FROM event_subscriptions WHERE active = 1 AND expires_at > ?',Date.now()):null;const accepted=env.DB?await dbFirst(env,"SELECT updated_at FROM bridge_runtime WHERE key = 'event_callback_accepted'"):null;return {configured:configured(env),site_user_id:who,owner_configured:!!env.BRIDGE_OWNER_SITE_ID,persistence_available:!!env.DB,guild_configured:!!env.DISCORD_GUILD_ID,token_configured:!!env.DISCORD_BOT_TOKEN,mode:env.BRIDGE_RUNTIME==='cloud'?'cloud_worker':'mcp_tools_and_events',line_configured:lineConfigured(env),line_events_enabled:env.LINE_ENABLE_EVENTS==='true',...(env.BRIDGE_RUNTIME==='cloud'?{cloud_runtime:await cloudRuntimeStatus(env)}:{}),mcp_events_supported:true,events_enabled:env.DISCORD_ENABLE_EVENTS==='true',event_transport_configured:!!((env.COMPANION_ORIGIN||env.BRIDGE_RUNTIME==='cloud')&&env.COMPANION_SHARED_KEY),gateway_running:runtime.gateway_ready===true,active_event_subscriptions:Number(subscribed?.n||0),last_callback_accepted_at:accepted?.updated_at?new Date(accepted.updated_at).toISOString():null,dot_auto_wake:Number(subscribed?.n||0)?null:false,automatic_reaction_selection:false,daily_digest_scheduled:false,privacy:description};
@@ -225,9 +226,9 @@ async function callTool(name,a,req,env){
 function validateArgs(tool,a){
  if(!a||typeof a!=='object'||Array.isArray(a))throw new Fault('INVALID_ARGUMENTS');
  for(const k of Object.keys(a))if(!(k in tool.inputSchema.properties))throw new Fault('UNKNOWN_ARGUMENT');
- for(const k of tool.inputSchema.required)if(a[k]===undefined)throw new Fault('MISSING_ARGUMENT');
+ for(const k of tool.inputSchema.required||[])if(a[k]===undefined)throw new Fault('MISSING_ARGUMENT');
 }
-const page=`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ともにゃ Discord接続</title><style>body{font:17px/1.75 system-ui,sans-serif;background:#f6f5f0;color:#222;margin:0}main{max-width:720px;margin:7vh auto;padding:28px}h1{font-size:30px}h2{font-size:20px;margin-top:28px}.note{padding:20px;border:1px solid #ccc;border-radius:16px;background:white}li{margin:10px 0}code{overflow-wrap:anywhere;font-size:14px}a{color:#275b64}</style><main><p>ともにゃ · Discord</p><h1>Discord接続の準備</h1><section class="note"><strong>まだDiscordには接続していません</strong><p>このページは接続用サービスです。Botの認証情報と対象サーバーを安全に設定し、プラグインを接続してから使用します。トークンをチャットやこのページへ貼り付けないでください。</p></section><h2>実装されている操作</h2><ul><li>許可した1サーバーのチャンネル・スレッドと履歴の取得</li><li>メンションへの短い返信、詳細用スレッドの作成</li><li>選んだ絵文字でのリアクション、元発言の本人への支援DM</li><li>重複抑止、Bot同士のループ防止、DMの回数制限と停止</li></ul><h2>接続後も別途必要なもの</h2><p>公式MCP Eventsで、Discordの新着を既存のともにゃへ届ける機能を準備しました。常駐受信サービス・認証・イベント購読の設定が必要です。常時監視、高速な自動リアクション、毎日の経営サマリーはまだ未稼働です。別のAI Botへの置き換えは行っていません。</p><h2>安全な設定</h2><p>Botトークンは常駐サービス側の秘密情報として管理します。このprivate Siteは本人認証と署名転送だけを担い、Botトークンや会話状態を保存しません。本人認証、対象サーバーID、Bot IDが未設定ならすべてのDiscord操作を拒否します。閲覧を許可したチャンネルの情報だけを扱い、個人の非公開会話は持ち込みません。</p><p><a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Discord Developer Portal</a> · <a href="/health">サービス状態</a> · <a href="/setup/status">本人確認用の接続ID</a></p></main></html>`;
+const page=`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Your dot Messaging Bridge</title><style>body{font:17px/1.75 system-ui,sans-serif;background:#f6f5f0;color:#222;margin:0}main{max-width:720px;margin:7vh auto;padding:28px}h1{font-size:32px;line-height:1.4}h2{font-size:21px;margin-top:30px}.note{padding:24px;border:1px solid #d6d9d1;border-radius:16px;background:white}li{margin:10px 0}a{color:#275b64}small{color:#59625f}</style><main><p>Your dot · Messaging Bridge</p><h1>LINE・Discordから、<br>Your dotへ。</h1><section class="note"><p>LINEのメッセージとDiscordの許可済みDM・メンションを、本人のYour dotへ届ける接続サービスです。返答は元の会話へ送ります。</p><p><a href="/runtime/bridge">本人用の接続状況を開く</a> · <a href="/runtime/inbox">本人用LINE受信箱</a></p><small>本人用画面とMCP操作には認証が必要です。この案内ページに、接続アカウントや会話は表示しません。</small></section><h2>自分のdotにつなぐ</h2><p>公開リポジトリをdotへ渡すと、同梱のAGENTS.mdから設定を進められます。自分のBotとアカウントを使い、ログインが必要な設定は接続済みPCで行います。</p><p><a href="https://github.com/miyashita-code/codex-messaging-bridge" rel="noreferrer">GitHubでセットアップ手順を見る</a></p><h2>受信と復旧</h2><p>LINEは署名を検証したWebhookをクラウドで受信・保存します。Discordの高速回収はdotのcloud browserで動き、停止時の回収と再試行はクラウドスケジュールで補います。返信までの時間は購読、受信画面、スケジュールの状態に左右されます。</p><p><small>独立したオープンソースの連携です。OpenAI・LINE・Discordの公式製品ではありません。</small></p></main></html>`;
 const events=eventService({authenticate,requireConfig,source,dmSource,honorDmStop,backfillChannels,channel,dbRun,dbFirst,lineSource,requireLine});
 function checkModernRequest(req,body){
  const meta=body.params?._meta;const version=meta?.['io.modelcontextprotocol/protocolVersion'];
@@ -242,11 +243,14 @@ export default {async fetch(req,env,ctx){
  if(url.pathname==='/webhooks/line'&&env.BRIDGE_RUNTIME==='cloud')return lineWebhook(req,env,events,ctx);
  const availableTools=[...tools,...lineTools,maintainTool];
  const origin=req.headers.get('origin');if(origin&&origin!==url.origin)return json({error:'CROSS_ORIGIN_DENIED'},403);
+ if(env.BRIDGE_RUNTIME==='cloud'&&['/runtime/inbox','/runtime/line-reply'].includes(url.pathname)){
+  try{authenticate(req,env);return await cloudInbox(req,env);}catch(e){return json({error:e instanceof Fault||e instanceof LineFault?e.code:'INBOX_UNAVAILABLE'},e.status||503);}
+ }
  if(env.BRIDGE_RUNTIME==='cloud'&&['/runtime/bridge','/runtime/tick'].includes(url.pathname)){
   try{authenticate(req,env);}catch(e){return json({error:e.code},e.status);}
   if(url.pathname==='/runtime/tick'){
    if(req.method!=='POST'||origin!==url.origin)return json({error:'METHOD_OR_ORIGIN_DENIED'},403);
-   try{return json(await maintainCloud(env,{discord,events,configured}));}catch{return json({error:'CLOUD_MAINTENANCE_FAILED'},503);}
+   try{return json(await maintainCloud(env,{discord,events,configured,source:'browser'}));}catch{return json({error:'CLOUD_MAINTENANCE_FAILED'},503);}
   }
   if(req.method!=='GET')return json({error:'METHOD_NOT_ALLOWED'},405);
   const nonce=crypto.randomUUID().replaceAll('-','');
