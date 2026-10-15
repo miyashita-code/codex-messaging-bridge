@@ -59,11 +59,14 @@ function attachmentFetcher(env,injected){
  if(typeof globalThis.fetch!=='function')fail('FETCH_UNAVAILABLE',503);
  return (...args)=>globalThis.fetch(...args);
 }
+const safeProperty=(value,key)=>{try{return value?.[key];}catch{return undefined;}};
 function transportFailure(error){
- const name=error?.name,code=error?.code,message=typeof error?.message==='string'?error.message.slice(0,512):'';
+ const name=safeProperty(error,'name'),code=safeProperty(error,'code')||safeProperty(safeProperty(error,'cause'),'code'),raw=safeProperty(error,'message'),message=typeof raw==='string'?raw.slice(0,1024):'';
  // Only fixed classifications escape; raw host exceptions can contain the
  // signed CDN URL, credentials or unrelated runtime implementation details.
  if(code==='ERR_INVALID_THIS'||/illegal invocation|incorrect (?:this|receiver)/i.test(message))fail('FETCH_BINDING_ERROR',502);
+ if(/\b(?:AbortSignal|signal)\b/i.test(message)&&/incompatib|not of type|not an instance|must be|invalid|expected|unsupported|not supported/i.test(message))fail('FETCH_SIGNAL_INCOMPATIBLE',502);
+ if(/\bRequestInit\b/i.test(message)&&/unsupported|not supported|unexpected|unknown property|invalid|not allowed|not a valid/i.test(message))fail('FETCH_INIT_UNSUPPORTED',502);
  if(['SecurityError','NotAllowedError'].includes(name)||['ERR_ACCESS_DENIED','ERR_NETWORK_ACCESS_DENIED','NETWORK_ACCESS_DENIED'].includes(code))fail('FETCH_POLICY_DENIED',502);
  if(name==='AbortError')fail('FETCH_ABORTED',502);
  fail(name==='TypeError'?'FETCH_TYPE_ERROR':'FETCH_FAILED',502);
@@ -71,11 +74,16 @@ function transportFailure(error){
 async function download(env,attachment,{fetchAttachment,timeoutMs}){
  const fetcher=attachmentFetcher(env,fetchAttachment);
  if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1)fail('FETCH_UNAVAILABLE',503);
- const controller=new AbortController();let timer,reader,response,phase='fetch';
- const timedOut=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new DiscordAttachmentError('DISCORD_ATTACHMENT_TIMEOUT',504));controller.abort();cancel(reader);},Math.min(timeoutMs,TIMEOUT_MS));});
+ const deadline=Math.min(timeoutMs,TIMEOUT_MS);let signal;
+ try{signal=globalThis.AbortSignal.timeout(deadline);}catch{fail('FETCH_SIGNAL_UNAVAILABLE',503);}
+ let timer,reader,response,phase='fetch';
+ const timedOut=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new DiscordAttachmentError('DISCORD_ATTACHMENT_TIMEOUT',504));cancel(reader);},deadline);});
  const bounded=operation=>Promise.race([Promise.resolve().then(operation),timedOut]);
  try{
-  response=await bounded(()=>fetcher(attachment.url,{method:'GET',redirect:'error',credentials:'omit',referrerPolicy:'no-referrer',signal:controller.signal}));
+  // Match the supported server-side API transport. There is no browser cookie
+  // jar or ambient Authorization; no headers are forwarded to this fixed CDN.
+  // Native timeout signals avoid cross-runtime AbortController incompatibility.
+  response=await bounded(()=>fetcher(attachment.url,{method:'GET',redirect:'manual',signal}));
   if(!response||!Number.isInteger(response.status)||response.status<100||response.status>599||typeof response.ok!=='boolean')fail('RESPONSE_INVALID',502);
   if(response.redirected||response.status>=300&&response.status<400)fail('REDIRECT_DENIED',502);
   if(!response.ok)fail('HTTP_'+response.status,502);
@@ -93,8 +101,8 @@ async function download(env,attachment,{fetchAttachment,timeoutMs}){
   }
   if(size!==attachment.size)fail('SIZE_MISMATCH',502);
   const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}return bytes;
- }catch(error){if(error instanceof DiscordAttachmentError)throw error;if(phase==='body')fail('BODY_READ_FAILED',502);transportFailure(error);}
- finally{clearTimeout(timer);controller.abort();if(reader)cancel(reader);else cancel(response?.body);}
+ }catch(error){if(error instanceof DiscordAttachmentError)throw error;if(signal.aborted)fail('TIMEOUT',504);if(phase==='body')fail('BODY_READ_FAILED',502);transportFailure(error);}
+ finally{clearTimeout(timer);if(reader)cancel(reader);else cancel(response?.body);}
 }
 export async function readDiscordAttachment(env,args,{readSource,fetchAttachment,timeoutMs=TIMEOUT_MS}={}){
  const selected=argumentsFor(args);

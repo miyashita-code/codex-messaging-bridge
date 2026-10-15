@@ -28,7 +28,7 @@ test('authorized Bot attachment returns complete UTF-8 text without URL, query s
  assert.equal(result.coverage,'complete');assert.equal(result.end_of_file,true);assert.equal(result.next_offset,null);assert.equal(result.trust,'untrusted_discord_attachment');
  assert.equal(result.content_type,'text/markdown');assert.deepEqual(s.state.calls,[{channel_id:C,message_id:M},{channel_id:C,message_id:M}]);
  assert.equal(s.state.fetches.length,1);const options=s.state.fetches[0].options;
- assert.equal(options.redirect,'error');assert.equal(options.credentials,'omit');assert.equal(options.referrerPolicy,'no-referrer');assert.equal('headers' in options,false);
+ assert.equal(options.redirect,'manual');assert.deepEqual(Object.keys(options).sort(),['method','redirect','signal']);assert.equal('headers' in options,false);
  const serialized=JSON.stringify(result);for(const secret of [s.env.DISCORD_BOT_TOKEN,'synthetic-signed-value','https://','Authorization'])assert.equal(serialized.includes(secret),false);
 });
 test('offsets and limits count Unicode characters and never split an emoji surrogate pair',async()=>{
@@ -141,6 +141,8 @@ test('fixed transport codes separate receiver, policy and network failures witho
  const cases=[
   [new TypeError('Illegal invocation '+secret),'FETCH_BINDING_ERROR'],
   [Object.assign(new Error(secret),{code:'ERR_INVALID_THIS'}),'FETCH_BINDING_ERROR'],
+  [new TypeError('RequestInit signal must be an instance of AbortSignal '+secret),'FETCH_SIGNAL_INCOMPATIBLE'],
+  [new TypeError('Unsupported credentials property in RequestInit '+secret),'FETCH_INIT_UNSUPPORTED'],
   [new DOMException(secret,'SecurityError'),'FETCH_POLICY_DENIED'],
   [Object.assign(new Error(secret),{code:'ERR_NETWORK_ACCESS_DENIED'}),'FETCH_POLICY_DENIED'],
   [new DOMException(secret,'AbortError'),'FETCH_ABORTED'],
@@ -159,4 +161,22 @@ test('HTTP diagnostics expose only the bounded status code and never inspect den
 test('a body transport failure and an unavailable configured fetch remain distinct from CDN HTTP rejection',async()=>{
  const s=setup();await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:true,status:200,headers:new Headers(),body:{getReader(){return{read:async()=>{throw Error('private stream https://signed.test');},cancel(){}};}}})}),code('BODY_READ_FAILED'));
  const invalid=setup();invalid.env.ATTACHMENT_FETCH='not-a-function';await assert.rejects(readDiscordAttachment(invalid.env,args,{readSource:invalid.readSource}),code('FETCH_UNAVAILABLE'));assert.equal(invalid.state.calls.length,1);
+});
+
+test('download uses only the supported minimal server init and the native timeout signal capped at eight seconds',async t=>{
+ const s=setup(),nativeSignal=AbortSignal.timeout(1000),calls=[];t.mock.method(AbortSignal,'timeout',function(ms){assert.equal(this,AbortSignal);calls.push(ms);return nativeSignal;});
+ const result=await s.read({},{timeoutMs:30000,fetchAttachment:async(_url,options)=>{assert.deepEqual(Object.keys(options).sort(),['method','redirect','signal']);assert.equal(options.method,'GET');assert.equal(options.redirect,'manual');assert.equal(options.signal,nativeSignal);return new Response(s.state.body);}});
+ assert.equal(result.total_bytes,s.state.body.byteLength);assert.deepEqual(calls,[8000]);
+});
+
+test('manual redirects are rejected before following or reading even a success-looking redirected response',async()=>{
+ const s=setup();let calls=0,reads=0;await assert.rejects(s.read({},{fetchAttachment:async(_url,options)=>{calls++;assert.equal(options.redirect,'manual');return{ok:true,status:200,redirected:true,headers:new Headers(),body:{getReader(){reads++;throw Error('must not read');},cancel(){}}};}}),code('REDIRECT_DENIED'));assert.equal(calls,1);assert.equal(reads,0);assert.equal(s.state.calls.length,1);
+});
+
+test('unavailable native timeout support fails closed before a CDN request',async t=>{
+ const s=setup();t.mock.method(AbortSignal,'timeout',()=>{throw Error('private host details https://signed.test');});await assert.rejects(s.read(),code('FETCH_SIGNAL_UNAVAILABLE'));assert.equal(s.state.fetches.length,0);assert.equal(s.state.calls.length,1);
+});
+
+test('host exception getters cannot expose raw errors or bypass the fixed transport classification',async()=>{
+ const s=setup(),error={};for(const field of ['name','message','code','cause'])Object.defineProperty(error,field,{get(){throw Error('private getter https://signed.test');}});await assert.rejects(s.read({},{fetchAttachment:async()=>{throw error;}}),code('FETCH_FAILED'));
 });
