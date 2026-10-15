@@ -91,6 +91,12 @@ On 2026-10-15, fresh client messages received native cloud Work replies with the
 | LINE | 5.8 seconds |
 | Discord during concurrent LINE/Discord input | 21.3 seconds |
 | Discord alone after resuming the receiver | 11.6 seconds |
+| LINE conversation continuation after encrypted history was enabled | 10.3 seconds |
+| Discord conversation continuation with its own separate history | 14.8 seconds |
+
+Both native clients also answered follow-up questions using facts supplied only in their own prior conversation. Two LINE follow-ups took 70.3 and 69.2 seconds end to end: their platform timestamps preceded cloud persistence by about 62.6 and 62.8 seconds, followed by 7.6 and 6.3 seconds to API completion. The delayed webhook invocation returned HTTP 200 in 1.14 seconds; its delay before persistence remains unexplained. The official LINE API confirmed that the expected public webhook was active. Owner diagnostics expose `source_occurred_at` and `interval_ms.occurred_to_recorded` without another content read or network call. `line_first_ingress_is_redelivery` records only a boolean from validated ingress through best-effort background work. Missing flags, old records, or an unavailable execution context return null. This flag can distinguish a recorded redelivery but does not establish its cause. LINE Developers webhook error statistics still require an authenticated account session for investigation.
+
+A controlled interruption test observed the lease expire, followed by a new `bridge_maintain` call and lease acquisition through the existing recovery path at 20:22 JST, after its 20:20 schedule. The two queued client messages received correct, history-aware replies after 219.5 and 228.9 seconds. No manual Run action or restart prompt was used. The operations history was opened read-only while startup was delayed; an automatic-run ID and start timestamp were not obtained. Treat this as observed recovery with that limitation, not proof of a cold restart with every UI closed or of immediate recovery.
 
 These are individual observations, not a latency guarantee or a controlled comparison of models. Physical laptop shutdown, continuous 24-hour operation, and automatic task restart are not established by these tests. The existing hourly fallback cannot provide immediate recovery if the fast receiver stops, and scheduled runs can themselves be delayed or fail.
 

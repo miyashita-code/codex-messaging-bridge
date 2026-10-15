@@ -21,7 +21,7 @@ async function rpc(env,method,params,owner='owner'){
 }
 const sub={name:'line.message.created',arguments:{},delivery:{mode:'webhook',url:'https://chatgpt.com/fixture-callback',secret:'whsec_'+Buffer.alloc(32,9).toString('base64')}};
 function envelope(){return {destination:B,events:[{webhookEventId:E,type:'message',timestamp:Date.now(),source:{type:'user',userId:U},message:{id:'123',type:'text',text:'private LINE fixture'},replyToken:'fixture-reply'}]};}
-async function webhook(env,body=envelope(),signature){const raw=JSON.stringify(body);return worker.fetch(new Request('https://site.example/webhooks/line',{method:'POST',headers:{'content-type':'application/json','x-line-signature':signature??createHmac('sha256',env.LINE_CHANNEL_SECRET).update(raw).digest('base64')},body:raw}),env);}
+async function webhook(env,body=envelope(),signature,ctx){const raw=JSON.stringify(body);return worker.fetch(new Request('https://site.example/webhooks/line',{method:'POST',headers:{'content-type':'application/json','x-line-signature':signature??createHmac('sha256',env.LINE_CHANNEL_SECRET).update(raw).digest('base64')},body:raw}),env,ctx);}
 const tool=(env,name,args,owner)=>rpc(env,'tools/call',{name,arguments:args},owner);
 test('LINE is serverless: signed intake, encrypted persistence, authenticated MCP, direct verified event callback and same-conversation reply',async()=>{
  const s=setup();assert.ok((await rpc(s.env,'events/subscribe',sub)).b.result.id);
@@ -73,3 +73,35 @@ test('cloud inbox escapes message HTML and never exposes tokens to the browser',
 test('cloud browser reply is owner-only, same-origin and deduplicated',async()=>{const s=setup();await webhook(s.env);const request=(owner,origin)=>new Request('https://site.example/runtime/line-reply',{method:'POST',headers:{'oai-authenticated-user-id':owner,origin,'content-type':'application/x-www-form-urlencoded'},body:new URLSearchParams({event_id:E,content:'cloud browser reply'})});assert.equal((await worker.fetch(request('','https://site.example'),s.env)).status,401);assert.equal((await worker.fetch(request('owner','https://evil.test'),s.env)).status,403);const first=await worker.fetch(request('owner','https://site.example'),s.env);assert.ok((await first.text()).includes('送信済み'));const second=await worker.fetch(request('owner','https://site.example'),s.env);assert.ok((await second.text()).includes('重複送信'));assert.equal(s.sent.length,1);});
 
 test('cloud maintenance works through actual MCP dispatch with an empty argument schema',async()=>{const s=setup();const r=await tool(s.env,'bridge_maintain',{});assert.equal(r.b.result.isError,false);const out=JSON.parse(r.b.result.content[0].text);assert.equal(out.mode,'cloud_polling');assert.equal(out.source,'mcp');assert.equal((await cloudRuntimeStatus(s.env)).healthy,true);assert.equal(JSON.parse(s.env.DB.raw.prepare("SELECT value FROM bridge_runtime WHERE key='cloud_mcp_maintenance'").get().value).source,'mcp');});
+
+test('only genuine approved LINE ingress records the projected redelivery flag through waitUntil',async()=>{
+ for(const flag of [false,true,undefined,'true',1]){
+  const s=setup(),tasks=[],body=envelope();body.events[0].deliveryContext={...(flag!==undefined?{isRedelivery:flag}:{}),privateExtra:'never-record-this'};
+  const response=await webhook(s.env,body,undefined,{waitUntil(task){tasks.push(task);}});assert.equal(response.status,200);await Promise.all(tasks);
+  const status=JSON.parse((await tool(s.env,'bridge_status',{})).b.result.content[0].text);assert.equal(status.delivery_diagnostics.messages[0].line_first_ingress_is_redelivery,typeof flag==='boolean'?flag:null);
+  const rows=JSON.stringify(s.env.DB.raw.prepare("SELECT key,value FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").all());for(const secret of ['private LINE fixture','fixture-reply','fixture-token','never-record-this',U,B])assert.equal(rows.includes(secret),false);assert.equal(s.sent.length,0);
+ }
+ const s=setup(),tasks=[],ctx={waitUntil(task){tasks.push(task);}},bad=envelope();bad.events[0].deliveryContext={isRedelivery:true};
+ assert.equal((await webhook(s.env,bad,'x'.repeat(43)+'=',ctx)).status,401);bad.destination=U;assert.equal((await webhook(s.env,bad,undefined,ctx)).status,400);bad.destination=B;bad.events[0].source.userId='U'+'3'.repeat(32);assert.equal((await webhook(s.env,bad,undefined,ctx)).status,200);await Promise.all(tasks);
+ assert.equal(s.env.DB.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").get().n,0);assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM cloud_line_messages').get().n,0);
+});
+
+test('LINE ACK and source persistence do not wait for a blocked diagnostic write',async()=>{
+ const s=setup(),original=s.env.DB,tasks=[];let release,started;const ready=new Promise(resolve=>{started=resolve;});
+ s.env.DB={...original,prepare(sql){return{bind(...values){const statement=original.prepare(sql).bind(...values);return{...statement,async run(){if(sql.startsWith('INSERT INTO bridge_runtime')&&String(values[0]).startsWith('delivery_diag:v1:')){started();await new Promise(resolve=>{release=resolve;});}return statement.run();}};}};}};
+ const body=envelope();body.events[0].deliveryContext={isRedelivery:false};
+ const response=await webhook(s.env,body,undefined,{waitUntil(task){tasks.push(task);}});assert.equal(response.status,200);assert.deepEqual(await response.json(),{accepted:true});await ready;
+ assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM cloud_line_messages').get().n,1);assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM event_records').get().n,1);assert.equal(s.env.DB.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").get().n,0);assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM actions').get().n,0);
+ release();await Promise.all(tasks);const stored=JSON.parse(s.env.DB.raw.prepare("SELECT value FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").get().value);assert.equal(stored.line_first_ingress_is_redelivery,false);
+});
+
+test('missing execution context skips ingress telemetry and a failed registration cannot change LINE ACK',async()=>{
+ const s=setup(),body=envelope();body.events[0].deliveryContext={isRedelivery:true};assert.equal((await webhook(s.env,body)).status,200);assert.equal(s.env.DB.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").get().n,0);
+ const second=setup(),tasks=[];let registrations=0;const response=await webhook(second.env,body,undefined,{waitUntil(task){registrations++;if(registrations===1)throw Error('unsupported telemetry lifetime');tasks.push(task);}});assert.equal(response.status,200);await Promise.all(tasks);assert.equal(second.env.DB.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'delivery_diag:v1:*'").get().n,0);assert.equal(second.env.DB.raw.prepare('SELECT COUNT(*) n FROM cloud_line_messages').get().n,1);
+});
+
+test('failed ingress metadata cannot change ACK, source data, reply completion or deduplicated sends',async()=>{
+ const s=setup(),original=s.env.DB,tasks=[];s.env.DB={...original,prepare(sql){return{bind(...values){const statement=original.prepare(sql).bind(...values);return{...statement,async run(){if(String(values[0]).startsWith('delivery_diag:v1:'))throw Error('private diagnostic failure fixture-token');return statement.run();}};}};}};
+ const body=envelope();body.events[0].deliveryContext={isRedelivery:false};assert.equal((await webhook(s.env,body,undefined,{waitUntil(task){tasks.push(task);}})).status,200);await Promise.all(tasks);const before=s.env.DB.raw.prepare('SELECT * FROM cloud_line_messages').get();
+ const first=await tool(s.env,'line_reply',{event_id:E,content:'confirmed answer'});assert.equal(JSON.parse(first.b.result.content[0].text).status,'completed');const duplicate=await tool(s.env,'line_reply',{event_id:E,content:'confirmed answer'});assert.equal(JSON.parse(duplicate.b.result.content[0].text).duplicate,true);assert.equal(s.sent.length,1);assert.equal(s.env.DB.raw.prepare('SELECT status FROM actions').get().status,'completed');assert.deepEqual(s.env.DB.raw.prepare('SELECT * FROM cloud_line_messages').get(),before);
+});

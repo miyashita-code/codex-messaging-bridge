@@ -5,7 +5,7 @@ import {readFileSync,readdirSync} from 'node:fs';
 import {createHmac} from 'node:crypto';
 import worker,{events,source,dmSource} from '../worker/index.js';
 import {lineSource} from '../worker/line.js';
-import {recordDeliveryTiming,lineDiagnosticSource,deliveryDiagnostics,pruneDeliveryDiagnostics} from '../worker/delivery-diagnostics.js';
+import {recordDeliveryTiming,recordLineIngressDelivery,lineDiagnosticSource,deliveryDiagnostics,pruneDeliveryDiagnostics} from '../worker/delivery-diagnostics.js';
 
 const G='111111111111111111',C='222222222222222222',M='333333333333333333',B='444444444444444444',U='555555555555555555',DM='666666666666666666',THREAD='777777777777777777';
 const LINE_U='U'+'1'.repeat(32),LINE_B='U'+'2'.repeat(32),E='01DIAGNOSTICLINEEVENT00001';
@@ -228,4 +228,30 @@ test('source occurrence fields keep owner and current source authorization bound
  s.env.LINE_ALLOWED_USER_IDS='';assert.deepEqual((await diagnostics(s)).messages,[]);
  const d=setup();admitDm(d);await events.enqueue(d.env,{guild_id:G,channel_id:DM,message_id:M,scope:'dm'});await recordDeliveryTiming(d.env,{channel:'discord_dm',source_id:M,channel_id:DM,guild_id:G},'read_tool');assert.ok((await diagnostics(d)).messages[0].source_occurred_at);
  d.raw.prepare('DELETE FROM dm_contacts').run();assert.deepEqual((await diagnostics(d)).messages,[]);
+});
+
+test('LINE redelivery diagnostics preserve the original flag and tool timings across later redeliveries',async()=>{
+ const s=setup();await intake(s.env);const before=s.raw.prepare('SELECT * FROM cloud_line_messages').get();
+ await recordDeliveryTiming(s.env,lineDiagnosticSource(E),'read_tool');await recordLineIngressDelivery(s.env,E,false,true);await recordLineIngressDelivery(s.env,E,true,false);await recordDeliveryTiming(s.env,lineDiagnosticSource(E),'read_tool');
+ const result=await diagnostics(s),record=result.messages[0];assert.equal(record.line_first_ingress_is_redelivery,false);assert.ok(record.first_read_tool_at);assert.ok(record.last_read_tool_at);assert.match(result.line_redelivery_observation,/best_effort_waitUntil_null_if_missing_or_no_context_not_cause_proof/);
+ assert.deepEqual(s.raw.prepare('SELECT * FROM cloud_line_messages').get(),before);assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM actions').get().n,0);
+ const stored=JSON.stringify(observations(s));for(const secret of [BODY,TOKEN,REPLY_TOKEN,LINE_U,LINE_B])assert.equal(stored.includes(secret),false);
+});
+
+test('the durable source winner overrides a duplicate background write that completed first',async()=>{
+ const s=setup();await intake(s.env);await recordLineIngressDelivery(s.env,E,true,false);assert.equal((await diagnostics(s)).messages[0].line_first_ingress_is_redelivery,true);
+ await recordLineIngressDelivery(s.env,E,false,true);await recordLineIngressDelivery(s.env,E,true,false);assert.equal((await diagnostics(s)).messages[0].line_first_ingress_is_redelivery,false);
+});
+
+test('an unknown first LINE delivery flag remains null and an earlier-deployment duplicate is only a first recorded observation',async()=>{
+ const s=setup();await intake(s.env);await recordLineIngressDelivery(s.env,E,'true',true);await recordLineIngressDelivery(s.env,E,true,false);
+ assert.equal((await diagnostics(s)).messages[0].line_first_ingress_is_redelivery,null);
+ const older=setup();await intake(older.env);await recordLineIngressDelivery(older.env,E,true,false);await recordLineIngressDelivery(older.env,E,false,false);assert.equal((await diagnostics(older)).messages[0].line_first_ingress_is_redelivery,true);
+});
+
+test('redelivery diagnostics remain owner and sender authorized and never attribute a LINE flag to Discord',async()=>{
+ const s=setup();await intake(s.env);await recordLineIngressDelivery(s.env,E,true,true);assert.equal((await diagnostics(s)).messages[0].line_first_ingress_is_redelivery,true);
+ for(const principal of [null,'','other'])assert.equal(await deliveryDiagnostics(s.env,principal),null);s.env.LINE_ALLOWED_USER_IDS='';assert.deepEqual((await diagnostics(s)).messages,[]);
+ const d=setup();await recordDeliveryTiming(d.env,{channel:'discord_guild',source_id:M,channel_id:C,guild_id:G},'read_tool');d.raw.prepare("UPDATE bridge_runtime SET value=json_set(value,'$.line_first_ingress_is_redelivery',json('true')) WHERE key GLOB ?").run(PREFIX+'*');
+ assert.equal((await diagnostics(d)).messages[0].line_first_ingress_is_redelivery,null);
 });

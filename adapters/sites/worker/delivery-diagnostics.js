@@ -31,6 +31,25 @@ function metadata(input){
 }
 export const lineDiagnosticSource=eventId=>({channel:'line',source_id:eventId});
 export const discordDiagnosticSource=(env,scope,ch,message)=>({channel:scope==='dm'?'discord_dm':'discord_guild',source_id:message.id,channel_id:message.channel_id,guild_id:env.DISCORD_GUILD_ID,...(ch?.parent_id?{parent_channel_id:ch.parent_id}:{})});
+export async function recordLineIngressDelivery(env,eventId,isRedelivery,sourceCreated=false){
+ try{
+  if(env.BRIDGE_RUNTIME!=='cloud'||!env.DB||!env.BRIDGE_OWNER_SITE_ID)return;
+  const source=metadata(lineDiagnosticSource(eventId));if(!source)return;
+  const redelivery=typeof isRedelivery==='boolean'?isRedelivery:null,initial=sourceCreated===true;
+  const key=await namespace(env)+source.event_id,value={...source,line_first_ingress_is_redelivery:redelivery,line_ingress_source_first:initial};
+  // The source INSERT winner identifies the original durable ingress even if
+  // its background task finishes after a duplicate. Otherwise retain the first
+  // recorded flag, including an explicitly unknown/null flag.
+  await run(env,`INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)
+   ON CONFLICT(key) DO UPDATE SET value=CASE WHEN
+    json_type(bridge_runtime.value,'$.line_first_ingress_is_redelivery') IS NULL OR
+    (?=1 AND json_extract(bridge_runtime.value,'$.line_ingress_source_first') IS NOT 1)
+    THEN json_set(bridge_runtime.value,'$.line_first_ingress_is_redelivery',json(?),'$.line_ingress_source_first',json(?))
+    ELSE bridge_runtime.value END,updated_at=MAX(bridge_runtime.updated_at,excluded.updated_at)`,key,JSON.stringify(value),Date.now(),initial?1:0,JSON.stringify(redelivery),JSON.stringify(initial));
+ }catch{
+  // Ingress metadata is best effort and must never affect ACK or send state.
+ }
+}
 export async function recordDeliveryTiming(env,input,phase,at=Date.now()){
  try{
   if(env.BRIDGE_RUNTIME!=='cloud'||!env.DB||!env.BRIDGE_OWNER_SITE_ID||instant(at)===null)return;
@@ -111,10 +130,10 @@ export async function deliveryDiagnostics(env,principal,{channel:authorizeChanne
    const callbackAt=accepted?.accepted_at??null,readAt=instant(value.first_read_tool_at),reservedAt=action?.created_at??null;
    const completedAt=action?.status==='completed'?instant(value.confirmed_completed_at):null;
    const intervals={occurred_to_recorded:delta(permitted.recordedAt,permitted.occurredAt),recorded_to_callback:delta(callbackAt,permitted.recordedAt),callback_to_first_read_tool:delta(readAt,callbackAt),first_read_tool_to_reply_reserved:delta(reservedAt,readAt),reply_reserved_to_confirmed_completed:delta(completedAt,reservedAt),first_send_attempt_to_confirmed_completed:delta(completedAt,instant(value.first_send_attempt_at))};
-   output.push({channel:source.channel,event_id:source.event_id,source_occurred_at:iso(permitted.occurredAt),source_recorded_at:iso(permitted.recordedAt),notification_statuses:['pending','delivered','dead','cancelled'].filter(status=>accepted?.[status]===1),callback_delivery_updated_at:iso(callbackAt),first_read_tool_at:iso(readAt),last_read_tool_at:iso(value.last_read_tool_at),reply_reserved_at:iso(reservedAt),first_send_attempt_at:iso(value.first_send_attempt_at),last_send_attempt_at:iso(value.last_send_attempt_at),confirmed_completed_at:iso(completedAt),reply_status:['reserved','retryable','unknown','failed','completed'].includes(action?.status)?action.status:null,interval_ms:intervals,timing_order_warning:Object.values(intervals).some(value=>value!==null&&value<0)});
+   output.push({channel:source.channel,event_id:source.event_id,source_occurred_at:iso(permitted.occurredAt),source_recorded_at:iso(permitted.recordedAt),line_first_ingress_is_redelivery:source.channel==='line'&&typeof value.line_first_ingress_is_redelivery==='boolean'?value.line_first_ingress_is_redelivery:null,notification_statuses:['pending','delivered','dead','cancelled'].filter(status=>accepted?.[status]===1),callback_delivery_updated_at:iso(callbackAt),first_read_tool_at:iso(readAt),last_read_tool_at:iso(value.last_read_tool_at),reply_reserved_at:iso(reservedAt),first_send_attempt_at:iso(value.first_send_attempt_at),last_send_attempt_at:iso(value.last_send_attempt_at),confirmed_completed_at:iso(completedAt),reply_status:['reserved','retryable','unknown','failed','completed'].includes(action?.status)?action.status:null,interval_ms:intervals,timing_order_warning:Object.values(intervals).some(value=>value!==null&&value<0)});
    if(output.length>=LIMIT)break;
   }
-  return {available:true,limit:LIMIT,retention_days:7,source_occurrence_observation:'platform_event_timestamp_not_message_composition_or_model_start',read_observation:'successful_read_tool_entry_not_model_start',callback_observation:'earliest_delivered_outbox_updated_at',trigger_origin:'not_observed',messages:output};
+  return {available:true,limit:LIMIT,retention_days:7,source_occurrence_observation:'platform_event_timestamp_not_message_composition_or_model_start',line_redelivery_observation:'first_signature_verified_ingress_best_effort_waitUntil_null_if_missing_or_no_context_not_cause_proof',read_observation:'successful_read_tool_entry_not_model_start',callback_observation:'earliest_delivered_outbox_updated_at',trigger_origin:'not_observed',messages:output};
  }catch{return {available:false,reason:'DIAGNOSTICS_UNAVAILABLE',messages:[]};}
 }
 export async function pruneDeliveryDiagnostics(env){

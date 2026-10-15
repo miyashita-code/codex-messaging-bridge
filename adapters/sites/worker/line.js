@@ -1,6 +1,6 @@
 import {currentLineToken} from './line-token.js';
 import { eventCryptoForTest as codec } from './events.js';
-import {lineDiagnosticSource,recordDeliveryTiming} from './delivery-diagnostics.js';
+import {lineDiagnosticSource,recordDeliveryTiming,recordLineIngressDelivery} from './delivery-diagnostics.js';
 const enc = new TextEncoder();
 const USER = /^U[0-9a-f]{32}$/;
 const EVENT = /^[A-Za-z0-9_-]{8,100}$/;
@@ -62,6 +62,14 @@ async function rawBody(req){
  const bytes=new Uint8Array(n);let at=0;for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.length;}
  return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
 }
+function observeIngress(env,ctx,eventId,isRedelivery,sourceCreated){
+ // Without a supported request lifetime, do not start telemetry writes or
+ // extend the ACK path. Missing/nonboolean flags are recorded as unknown.
+ if(typeof ctx?.waitUntil!=='function')return;
+ let registered=false;
+ const task=Promise.resolve().then(()=>registered?recordLineIngressDelivery(env,eventId,isRedelivery,sourceCreated):undefined).catch(()=>undefined);
+ try{ctx.waitUntil(task);registered=true;}catch{}
+}
 export async function lineWebhook(req,env,events,ctx){
  try{
   if(req.method!=='POST')return json({error:'METHOD_NOT_ALLOWED'},405);
@@ -78,7 +86,8 @@ export async function lineWebhook(req,env,events,ctx){
    const id=event.webhookEventId,at=event.timestamp;
    if(!EVENT.test(id||'')||!Number.isSafeInteger(at)||at<0||at>Date.now()+60000||typeof event.message.text!=='string'||event.message.text.length>10000||typeof event.message.id!=='string')continue;
    const sealed=await codec.seal(env,{text:event.message.text,replyToken:event.replyToken||null,messageId:event.message.id},'line:'+id);
-   await run(env,'INSERT OR IGNORE INTO cloud_line_messages (event_id,user_id,body_sealed,occurred_at,created_at) VALUES (?,?,?,?,?)',id,event.source.userId,sealed,at,Date.now());
+   const saved=await run(env,'INSERT OR IGNORE INTO cloud_line_messages (event_id,user_id,body_sealed,occurred_at,created_at) VALUES (?,?,?,?,?)',id,event.source.userId,sealed,at,Date.now());
+   observeIngress(env,ctx,id,typeof event.deliveryContext?.isRedelivery==='boolean'?event.deliveryContext.isRedelivery:null,saved?.meta?.changes===1);
    await events.enqueueLine(env,id);
   }
   // Persist before acknowledgement; retries use the same durable event identity.
