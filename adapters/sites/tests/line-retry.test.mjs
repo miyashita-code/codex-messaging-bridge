@@ -22,7 +22,7 @@ test('a rejected 429 survives restart and recovers with the original recipient, 
  s.env.LINE_FETCH=async(url,opts)=>{requests.push({url,opts});return requests.length===1?new Response(null,{status:429,headers:{'retry-after':'60'}}):Response.json({});};
  await assert.rejects(lineCall('line_reply',{event_id:E,content:'private approved response'},s.env),{code:'LINE_HTTP_429'});
  assert.equal(s.db.prepare('SELECT status FROM actions').get().status,'retryable');
- assert(!s.db.prepare('SELECT value FROM bridge_runtime').get().value.includes('private approved response'));
+ assert(!s.db.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('line_reply_retry:'+E).value.includes('private approved response'));
  assert.equal((await retryCloudLineReplies(s.env)).retried,0);
  await assert.rejects(lineCall('line_reply',{event_id:E,content:'changed response'},s.env),{code:'LINE_REPLY_CONTENT_CONFLICT'});
  await due(s);
@@ -32,7 +32,7 @@ test('a rejected 429 survives restart and recovers with the original recipient, 
  assert.equal(requests[1].url,'https://api.line.me/v2/bot/message/push');
  assert.deepEqual(JSON.parse(requests[1].opts.body),{to:U,messages:[{type:'text',text:'private approved response'}]});
  await lineCall('line_reply',{event_id:E,content:'private approved response'},s.env);assert.equal(requests.length,2);
- assert.equal(s.db.prepare('SELECT count(*) n FROM bridge_runtime').get().n,0);
+ assert.equal(s.db.prepare("SELECT count(*) n FROM bridge_runtime WHERE key GLOB 'line_reply_retry:*'").get().n,0);
 });
 test('concurrent due retry attempts send only once',async t=>{
  const s=await fixture(t);s.env.LINE_FETCH=async()=>new Response(null,{status:429});

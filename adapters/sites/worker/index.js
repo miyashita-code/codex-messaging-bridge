@@ -5,6 +5,7 @@ import { proxyMcp, proxyConfigured } from './proxy.js';
 import { eventService, EventError, VERSION as MCP2_VERSION } from './events.js';
 import { probeDiscordRuntime } from './runtime-probe.js';
 import { keeperProbePage, createKeeperProbeSocket } from './keeper-probe.js';
+import {discordDiagnosticSource,recordDeliveryTiming,deliveryDiagnostics} from './delivery-diagnostics.js';
 const API = 'https://discord.com/api/v10';
 const PROTOCOL = '2025-06-18';
 const ID = /^[0-9]{17,20}$/;
@@ -132,9 +133,9 @@ async function reserve(env,key,kind,sourceId,recipientId=null){
  if(r.meta?.changes===0){const prev=await dbFirst(env,'SELECT status, result_id FROM actions WHERE action_key = ?',key);if(!prev){const stopped=kind==='dm'?await dbFirst(env,'SELECT blocked FROM dm_preferences WHERE user_id = ?',recipientId):null;if(stopped?.blocked)throw new Fault('DM_OPTED_OUT',403);throw new Fault('NOISE_LIMIT_REACHED',429);}return {duplicate:true,status:prev.status,result_id:prev.result_id||null};}
  return {duplicate:false};
 }
-async function action(env,key,kind,sourceId,recipient,send){
+async function action(env,key,kind,sourceId,recipient,send,timingSource){
  const reserved=await reserve(env,key,kind,sourceId,recipient);if(reserved.duplicate)return reserved;
- try{const result=await send();await dbRun(env,'UPDATE actions SET status = ?, result_id = ? WHERE action_key = ?','completed',result?.id||null,key);return {status:'completed',...(result||{})};}
+ try{const result=await send();await dbRun(env,'UPDATE actions SET status = ?, result_id = ? WHERE action_key = ?','completed',result?.id||null,key);await recordDeliveryTiming(env,timingSource,'confirmed_completed',Date.now());return {status:'completed',...(result||{})};}
  catch(e){await dbRun(env,'UPDATE actions SET status = ? WHERE action_key = ?',e.code==='DISCORD_WRITE_OUTCOME_UNKNOWN'?'unknown':'failed',key);throw e;}
 }
 function writeFlag(env,flag){if(env[flag]!=='true')throw new Fault(`${flag}_DISABLED`,403);}
@@ -143,18 +144,19 @@ async function rate(env,kind,recipient,window,max){
  if(Number(r?.n||0)>=max)throw new Fault('NOISE_LIMIT_REACHED',429);
 }
 async function stableNonce(key){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return Array.from(new Uint8Array(digest)).map(n=>n.toString(16).padStart(2,'0')).join('').slice(0,25);}
-async function sendMessage(env,channelId,content,key,extra={}){const r=await discord(env,`/channels/${sid(channelId)}/messages`,'POST',{...messagePayload(content,await stableNonce(key)),...extra});if(r.channel_id!==channelId||!ID.test(r.id))throw new Fault('DISCORD_WRITE_OUTCOME_UNKNOWN',502);return r;}
+async function sendMessage(env,channelId,content,key,extra={},timingSource){const path=`/channels/${sid(channelId)}/messages`,payload={...messagePayload(content,await stableNonce(key)),...extra};await recordDeliveryTiming(env,timingSource,'send_attempt',Date.now());const r=await discord(env,path,'POST',payload);if(r.channel_id!==channelId||!ID.test(r.id))throw new Fault('DISCORD_WRITE_OUTCOME_UNKNOWN',502);return r;}
 const messagePayload=(content,nonce)=>({content,allowed_mentions:{parse:[],replied_user:false},nonce,enforce_nonce:true});
 async function callTool(name,a,req,env){
+ const enteredAt=Date.now();
  if(env.BRIDGE_RUNTIME==='cloud'&&name==='bridge_maintain'){authenticate(req,env);return maintainCloud(env,{discord,events,configured,source:'mcp'});}
- if(env.BRIDGE_RUNTIME==='cloud'&&name.startsWith('line_')){authenticate(req,env);return lineCall(name,a,env);}
+ if(env.BRIDGE_RUNTIME==='cloud'&&name.startsWith('line_')){authenticate(req,env);return lineCall(name,a,env,{enteredAt});}
  if(name==='bridge_status'){
-  const who=authenticate(req,env,true);const runtime=typeof env.RUNTIME_STATUS==='function'?env.RUNTIME_STATUS():{};const subscribed=env.DB?await dbFirst(env,'SELECT COUNT(*) AS n FROM event_subscriptions WHERE active = 1 AND expires_at > ?',Date.now()):null;const accepted=env.DB?await dbFirst(env,"SELECT updated_at FROM bridge_runtime WHERE key = 'event_callback_accepted'"):null;return {configured:configured(env),site_user_id:who,owner_configured:!!env.BRIDGE_OWNER_SITE_ID,persistence_available:!!env.DB,guild_configured:!!env.DISCORD_GUILD_ID,token_configured:!!env.DISCORD_BOT_TOKEN,mode:env.BRIDGE_RUNTIME==='cloud'?'cloud_worker':'mcp_tools_and_events',line_configured:lineConfigured(env),line_events_enabled:env.LINE_ENABLE_EVENTS==='true',...(env.BRIDGE_RUNTIME==='cloud'?{cloud_runtime:await cloudRuntimeStatus(env)}:{}),mcp_events_supported:true,events_enabled:env.DISCORD_ENABLE_EVENTS==='true',event_transport_configured:!!((env.COMPANION_ORIGIN||env.BRIDGE_RUNTIME==='cloud')&&env.COMPANION_SHARED_KEY),gateway_running:runtime.gateway_ready===true,active_event_subscriptions:Number(subscribed?.n||0),last_callback_accepted_at:accepted?.updated_at?new Date(accepted.updated_at).toISOString():null,dot_auto_wake:Number(subscribed?.n||0)?null:false,automatic_reaction_selection:false,daily_digest_scheduled:false,privacy:description};
+  const who=authenticate(req,env,true);const runtime=typeof env.RUNTIME_STATUS==='function'?env.RUNTIME_STATUS():{};const subscribed=env.DB?await dbFirst(env,'SELECT COUNT(*) AS n FROM event_subscriptions WHERE active = 1 AND expires_at > ?',Date.now()):null;const accepted=env.DB?await dbFirst(env,"SELECT updated_at FROM bridge_runtime WHERE key = 'event_callback_accepted'"):null;const diagnostics=await deliveryDiagnostics(env,who,{channel});return {configured:configured(env),site_user_id:who,owner_configured:!!env.BRIDGE_OWNER_SITE_ID,persistence_available:!!env.DB,guild_configured:!!env.DISCORD_GUILD_ID,token_configured:!!env.DISCORD_BOT_TOKEN,mode:env.BRIDGE_RUNTIME==='cloud'?'cloud_worker':'mcp_tools_and_events',line_configured:lineConfigured(env),line_events_enabled:env.LINE_ENABLE_EVENTS==='true',...(env.BRIDGE_RUNTIME==='cloud'?{cloud_runtime:await cloudRuntimeStatus(env)}:{}),...(diagnostics?{delivery_diagnostics:diagnostics}:{}),mcp_events_supported:true,events_enabled:env.DISCORD_ENABLE_EVENTS==='true',event_transport_configured:!!((env.COMPANION_ORIGIN||env.BRIDGE_RUNTIME==='cloud')&&env.COMPANION_SHARED_KEY),gateway_running:runtime.gateway_ready===true,active_event_subscriptions:Number(subscribed?.n||0),last_callback_accepted_at:accepted?.updated_at?new Date(accepted.updated_at).toISOString():null,dot_auto_wake:Number(subscribed?.n||0)?null:false,automatic_reaction_selection:false,daily_digest_scheduled:false,privacy:description};
  }
  authenticate(req,env);requireConfig(env);
- if(name==='discord_dm_message_read'){const {m}=await dmSource(env,a);const stopped=await honorDmStop(env,m);return {...present(env,m),url:`https://discord.com/channels/@me/${m.channel_id}/${m.id}`,scope:'dm',opted_out:stopped};}
- if(name==='discord_reply_dm'){writeFlag(env,'DISCORD_ENABLE_REPLIES');const {m}=await dmSource(env,a);if(await honorDmStop(env,m))throw new Fault('DM_STOP_REQUEST',403);const content=text(a.content);const check=async()=>{const at=Date.parse(m.timestamp);if(!Number.isFinite(at))throw new Fault('INVALID_DM_TIMESTAMP');const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',m.author.id);if(pref?.blocked&&at<=pref.updated_at)throw new Fault('DM_OPTED_OUT',403);};await check();return action(env,`dmreply:${m.id}`,'dmreply',m.id,m.author.id,async()=>{await check();const r=await sendMessage(env,m.channel_id,content,`dmreply:${m.id}`);return {id:r.id,dm_channel_id:m.channel_id};});}
- if(name==='discord_message_read'){const {m}=await source(env,a);return present(env,m);}
+ if(name==='discord_dm_message_read'){const {ch,m}=await dmSource(env,a);const stopped=await honorDmStop(env,m);await recordDeliveryTiming(env,discordDiagnosticSource(env,'dm',ch,m),'read_tool',enteredAt);return {...present(env,m),url:`https://discord.com/channels/@me/${m.channel_id}/${m.id}`,scope:'dm',opted_out:stopped};}
+ if(name==='discord_reply_dm'){writeFlag(env,'DISCORD_ENABLE_REPLIES');const {ch,m}=await dmSource(env,a);if(await honorDmStop(env,m))throw new Fault('DM_STOP_REQUEST',403);const timingSource=discordDiagnosticSource(env,'dm',ch,m),content=text(a.content);const check=async()=>{const at=Date.parse(m.timestamp);if(!Number.isFinite(at))throw new Fault('INVALID_DM_TIMESTAMP');const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',m.author.id);if(pref?.blocked&&at<=pref.updated_at)throw new Fault('DM_OPTED_OUT',403);};await check();return action(env,`dmreply:${m.id}`,'dmreply',m.id,m.author.id,async()=>{await check();const r=await sendMessage(env,m.channel_id,content,`dmreply:${m.id}`,{},timingSource);return {id:r.id,dm_channel_id:m.channel_id};},timingSource);}
+ if(name==='discord_message_read'){const {ch,m}=await source(env,a);await recordDeliveryTiming(env,discordDiagnosticSource(env,'guild',ch,m),'read_tool',enteredAt);return present(env,m);}
  if(name==='discord_channels_list'){
   const [channels,active]=await Promise.all([discord(env,`/guilds/${env.DISCORD_GUILD_ID}/channels`),discord(env,`/guilds/${env.DISCORD_GUILD_ID}/threads/active`)]);
   const allowed=[...channels,...active.threads].filter(c=>{try{channelAllowed(c,env);return true;}catch{return false;}});
@@ -185,8 +187,8 @@ async function callTool(name,a,req,env){
   const user=sid(a.user_id);await dbRun(env,'INSERT INTO dm_preferences (user_id, blocked, updated_at) VALUES (?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET blocked = 1, updated_at = excluded.updated_at',user,Date.now());return {stopped:true};
  }
  if(name==='discord_reply_to_mention'){
-  writeFlag(env,'DISCORD_ENABLE_REPLIES');const {m}=await source(env,a,{mention:true});const content=text(a.content,500);
-  return action(env,`reply:${m.id}`,'reply',m.id,m.author.id,()=>sendMessage(env,m.channel_id,content,`reply:${m.id}`,{message_reference:{message_id:m.id,channel_id:m.channel_id,fail_if_not_exists:true}}).then(r=>({id:r.id,url:link(env,r)})));
+  writeFlag(env,'DISCORD_ENABLE_REPLIES');const {ch,m}=await source(env,a,{mention:true});const timingSource=discordDiagnosticSource(env,'guild',ch,m),content=text(a.content,500);
+  return action(env,`reply:${m.id}`,'reply',m.id,m.author.id,()=>sendMessage(env,m.channel_id,content,`reply:${m.id}`,{message_reference:{message_id:m.id,channel_id:m.channel_id,fail_if_not_exists:true}},timingSource).then(r=>({id:r.id,url:link(env,r)})),timingSource);
  }
  if(name==='discord_react'){
   writeFlag(env,'DISCORD_ENABLE_REACTIONS');const {m}=await source(env,a);const emoji=text(a.emoji,100);if(/[\s/\\?#]/u.test(emoji))throw new Fault('INVALID_EMOJI');

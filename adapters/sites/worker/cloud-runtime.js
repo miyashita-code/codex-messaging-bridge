@@ -1,5 +1,6 @@
 import {renewCloudLineToken} from './line-token.js';
 import {retryCloudLineReplies} from './line.js';
+import {pruneDeliveryDiagnostics} from './delivery-diagnostics.js';
 const ID=/^[0-9]{17,20}$/;
 const run=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).run();
 const first=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).first();
@@ -91,6 +92,7 @@ export async function maintainCloud(env,{discord,events,configured,source='unspe
   catch(error){const code=lineReplyFailure(error);if(!code)throw error;failures.push(code);lineReplies={retried:0,completed:0,requires_review:true,reason:code};}
   // LINE payloads have bounded retention; keep undelivered messages for review.
   await run(env,"DELETE FROM cloud_line_messages WHERE created_at<? AND NOT EXISTS (SELECT 1 FROM event_outbox WHERE event_id='line_'||cloud_line_messages.event_id AND status='pending')",Date.now()-30*86400000);
+  await pruneDeliveryDiagnostics(env);
   const result={observed,delivered:delivery.delivered,failures,degraded:failures.length>0,discord_configured:configured(env),mode:'cloud_polling',line_token:tokenRenewal,line_replies:lineReplies,source};
   if(source==='mcp')await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_mcp_maintenance',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",JSON.stringify(result),Date.now());
   await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_maintenance',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",JSON.stringify(result),Date.now());

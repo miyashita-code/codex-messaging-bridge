@@ -38,6 +38,10 @@ callbackの `2xx` は通知の受付であり、dotの返信処理開始の証�
 
 dotのtask詳細設定にあるモデル・思考量は、生成時間と品質の調整に使います。通知後の起動待ち時間を保証する設定ではありません。設定変更だけで改善したと判断せず、新しい実メッセージで3段階を再計測します。[モデルと思考量](https://learn.chatgpt.com/docs/models)
 
+Sites版のowner用 `bridge_status.delivery_diagnostics` は、直近の許可済みイベントについてcallback配信記録、最初の読取tool到達、返信予約、送信試行、送信完了の時刻を返します。読取未到達は `null` のまま表示し、本文・secret・callback URLは含めません。診断は直近7日・最大10件で、現在の送信者・会話ポリシーを再確認します。
+
+`first_read_tool_at` は成功した読取toolへ入ったサーバー時刻で、モデル起動時刻ではありません。手動の読取も観測されるため、E2Eの新着をこちらから読まず、dotの実行履歴と照合します。`confirmed_completed_at` は送信API成功後の時刻で、端末への表示は実アプリで確認します。未観測・負の時間差・診断取得失敗を、遅延ゼロや成功に読み替えません。
+
 ## Node版の接続の流れ
 
 1. READMEの手順でLINEチャネル、HTTPS公開URL、管理者接続パスフレーズを設定し、`backend: "dot"` でブリッジを起動します。HTTPSリバースプロキシから `/mcp`、`/.well-known/`、`/oauth/`、LINE Webhookの各パスを転送します。

@@ -1,5 +1,6 @@
 import {currentLineToken} from './line-token.js';
 import { eventCryptoForTest as codec } from './events.js';
+import {lineDiagnosticSource,recordDeliveryTiming} from './delivery-diagnostics.js';
 const enc = new TextEncoder();
 const USER = /^U[0-9a-f]{32}$/;
 const EVENT = /^[A-Za-z0-9_-]{8,100}$/;
@@ -85,18 +86,19 @@ export async function lineWebhook(req,env,events,ctx){
   return json({accepted:true});
  }catch(e){return json({error:e instanceof LineFault?e.code:'LINE_INGRESS_UNAVAILABLE'},e instanceof LineFault?e.status:503);}
 }
-async function send(env,path,body,retryKey){
- let r;try{r=await (env.LINE_FETCH||fetch)('https://api.line.me/v2/bot/message/'+path,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(12000),headers:{'content-type':'application/json',authorization:'Bearer '+await currentLineToken(env),...(retryKey?{'X-Line-Retry-Key':retryKey}:{})},body:JSON.stringify(body)});}catch{fail('LINE_WRITE_OUTCOME_UNKNOWN',502);}
+async function send(env,path,body,retryKey,timingSource){
+ let r;try{const token=await currentLineToken(env);await recordDeliveryTiming(env,timingSource,'send_attempt',Date.now());r=await (env.LINE_FETCH||fetch)('https://api.line.me/v2/bot/message/'+path,{method:'POST',redirect:'manual',signal:AbortSignal.timeout(12000),headers:{'content-type':'application/json',authorization:'Bearer '+token,...(retryKey?{'X-Line-Retry-Key':retryKey}:{})},body:JSON.stringify(body)});}catch{fail('LINE_WRITE_OUTCOME_UNKNOWN',502);}
  if(r.redirected||r.status>=300&&r.status<400)fail('LINE_WRITE_OUTCOME_UNKNOWN',502);
  if(r.status===429){const e=new LineFault('LINE_HTTP_429',502);const seconds=Number(r.headers.get('retry-after'));e.retryAfterMs=Number.isFinite(seconds)&&seconds>0?Math.min(seconds*1000,86400000):0;throw e;}
  if(r.status===409&&retryKey&&r.headers.get('x-line-accepted-request-id'))return {accepted:true};
  if(!r.ok){if(r.status===400&&path==='reply'){const b=await r.json().catch(()=>({}));if(b.message==='Invalid reply token')return {expired:true};}fail(r.status>=500?'LINE_WRITE_OUTCOME_UNKNOWN':'LINE_HTTP_'+r.status,502);}
  return {accepted:true};
 }
-export async function lineCall(name,args,env){
+export async function lineCall(name,args,env,{enteredAt=Date.now()}={}){
  if(name==='line_inbox_read')return lineInboxRead(env,args);
  const {row,m}=await lineSource(env,args);
- if(name==='line_message_read')return {event_id:row.event_id,content:m.text,timestamp:new Date(row.occurred_at).toISOString(),trust:'untrusted_line_content'};
+ const timingSource=lineDiagnosticSource(row.event_id);
+ if(name==='line_message_read'){await recordDeliveryTiming(env,timingSource,'read_tool',enteredAt);return {event_id:row.event_id,content:m.text,timestamp:new Date(row.occurred_at).toISOString(),trust:'untrusted_line_content'};}
  if(name!=='line_reply')fail('UNKNOWN_TOOL');
  if(env.LINE_ENABLE_REPLIES!=='true')fail('LINE_REPLIES_DISABLED',403);
  if(typeof args.content!=='string'||!args.content.trim()||args.content.length>5000)fail('INVALID_TEXT');
@@ -117,9 +119,10 @@ export async function lineCall(name,args,env){
  }
  try{
   const messages=[{type:'text',text:args.content}];
-  let result=m.replyToken&&Date.now()-row.created_at<50000?await send(env,'reply',{replyToken:m.replyToken,messages}):{expired:true};
-  if(result.expired)result=await send(env,'push',{to:row.user_id,messages},retryKey);
+  let result=m.replyToken&&Date.now()-row.created_at<50000?await send(env,'reply',{replyToken:m.replyToken,messages},undefined,timingSource):{expired:true};
+  if(result.expired)result=await send(env,'push',{to:row.user_id,messages},retryKey,timingSource);
   await run(env,"UPDATE actions SET status='completed' WHERE action_key=?",key);
+  await recordDeliveryTiming(env,timingSource,'confirmed_completed',Date.now());
   await run(env,'DELETE FROM bridge_runtime WHERE key=?',recordKey);
   return {status:'completed',event_id:row.event_id};
  }catch(e){
