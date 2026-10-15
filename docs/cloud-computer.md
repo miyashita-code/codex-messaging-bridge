@@ -1,6 +1,6 @@
 # Your dot の cloud computer とホスティング
 
-確認日: 2026年10月15日。**Sites + Your dotで、Macの受信サービスを停止した実LINE / Discordメンションへの自動返信を確認しました。** 追加hosting契約やOpenAI APIキーは使っていません。受信はSitesのWorker/D1、AI応答はYour dotが担当します。任意のNode daemonをcloud computerに置く方式の24時間常駐は引き続き未検証です。
+確認日: 2026年10月15日。**Sites + Your dotで、Macの受信サービスを停止した実LINE / Discordメンション・本人DMへの自動返信を確認しました。** 追加hosting契約やOpenAI APIキーは使っていません。受信はSitesのWorker/D1、AI応答はYour dotが担当します。Discordの試験ではcloud受信タブを開いていました。任意のNode daemonをcloud computerに置く方式の24時間常駐は引き続き未検証です。
 
 リポジトリを渡してagentにセットアップを任せる入口は [`AGENTS.md`](../AGENTS.md) と[agentオンボーディング](agent-onboarding.md)です。cloudで設定を準備し、アカウント設定は接続済みlocal PCへ委譲し、cloudで実接続とPC独立性を確認する手順を用意しています。設定準備とcloud常駐の実証は分けて扱います。
 
@@ -81,6 +81,7 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 | --- | --- |
 | LINE公開受信 | 公式Webhook Verify成功。MacのLINEサービスとtunnelを停止後、15:16の本人メッセージをSitesが受信・保存し、dotが自動起動。15:17に計算結果「437」と照合文字列を同じLINE会話へ返信。続く通常メッセージにも返信した。 |
 | Discordメンション | MacのDiscordサービスを15:22に未処理0件で停止。本人が15:42に送ったBotメンションをcloudが回収し、15:43にdotから同じ発言への返信を公式Discord APIで確認した。 |
+| Discord本人DM | Macの両受信サービス停止・自動起動無効、cloud受信タブ1つを開いた状態で試験。17:23:43の本人DM「53×17答え数字だけ」を17:23:55に回収し、17:23:57にcallbackが受理された。17:24:38にdotから同じDMへ「901」が到着。Discord実画面と、D1の返信記録1件が `completed` であることを確認した。 |
 | 再配備 | secret、D1、購読を維持したままSites v13へ再配備成功。その後のDiscord実返信が成功した。 |
 | Mac再起動時の競合防止 | 実返信確認後、旧LINE / Discord LaunchAgentの自動起動も無効化。privateの復元手順と旧設定は保持した。Mac全体の再起動は実施していない。 |
 | 復旧処理 | MCP経由の `bridge_maintain` を実行してD1への実行記録を確認。browser tickとMCP実行を分けて記録する。 |
@@ -93,7 +94,7 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 
 Discordの高速回収はdotのcloud browserタブが開いている間に動きます。タブが閉じた場合の返信はスケジュールの頻度・実行遅延に影響され、常時即時返信を保証しません。LINEはタブが閉じてもWebhookで受信・保存し、受信処理から通知を試みます。通知失敗は永続キューに残り、復旧処理が再試行します。通知の2xx受理後のdot処理は非同期で、今回の新規LINEには約10分の待ち時間がありました。即時返信や最大待ち時間の保証ではありません。[MCP Events](https://developers.openai.com/plugins/build/mcp-events)
 
-ここでのPC独立性試験は、**owned local受信サービス・tunnelを停止し、localhostの受信口を利用できなくした状態**です。物理的なPC電源断、Wi-Fi切断、24時間連続稼働とは区別します。Discord DMは購読準備済みで、移行後の実DM返信はまだ独立に検証していません。公開repoにはprivateのaccount ID・token・会話データを含めません。
+ここでのPC独立性試験は、**owned local受信サービス・tunnelを停止し、localhostの受信口を利用できなくした状態**です。物理的なPC電源断、Wi-Fi切断、24時間連続稼働とは区別します。Discordのメンションと本人DMはcloud受信タブを開いた状態で実返信を確認しました。タブ停止後の定期回収・返信は引き続き未検証です。公開repoにはprivateのaccount ID・token・会話データを含めません。
 
 ## Cloudでの試験結果と残る確認
 

@@ -2,7 +2,7 @@
 
 このリポジトリをYour dotへ渡すときの入口は、ルートの [`AGENTS.md`](../AGENTS.md) です。Codexはこの名前のファイルを作業開始前に読みます。Your dotへ渡す際も、以下の指示で明示的に読ませます。[公式のAGENTS.md案内](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
 
-目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。Sites版では、2026-10-15にローカル受信サービスを停止した実LINE / DiscordメンションへのYour dot自動返信を確認しました。任意のNode daemonをcloud computerに置く方式とは分け、各利用者の環境で復旧・購読・実返信まで検証します。
+目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。Sites版では、2026-10-15にローカル受信サービスを停止した実LINE / Discordメンション・本人DMへのYour dot自動返信を確認しました。Discordはcloud受信タブを開いた状態の試験で、タブ停止後の定期回復・物理PC電源断・24時間連続稼働は未検証です。任意のNode daemonをcloud computerに置く方式とは分け、各利用者の環境で復旧・購読・実返信まで検証します。[実測記録](cloud-computer.md#sitesでの移行検証2026年10月15日)
 
 ## そのまま渡せる依頼
 
