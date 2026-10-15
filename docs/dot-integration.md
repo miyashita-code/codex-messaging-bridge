@@ -26,6 +26,18 @@ Discordも同じMCP endpointで使えます。イベントは `discord.message.c
 
 2026-10-15にSites版の実LINE / Discordメンションへの自動返信を、Mac受信サービス停止中に確認しました。Node版のcloud常駐検証へ読み替えず、利用者ごとに同じ試験を行います。
 
+### 返信までの待ち時間を切り分ける
+
+callbackの `2xx` は通知の受付であり、dotの返信処理開始の証明ではありません。処理は非同期で、通知が速く届いても開始まで数分待つ場合があり、即時応答は保証しません。[MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+
+同じイベントについて、次の3段階を分けて計測します。
+
+1. LINE Webhookの受信・保存から、MCP callbackの `2xx` まで。
+2. callback受理から、dotの返信処理開始まで。最初の読取tool呼び出しは、観測できる開始の目安です。
+3. 返信処理開始から、LINE API送信完了と実アプリへの到着まで。
+
+dotのtask詳細設定にあるモデル・思考量は、生成時間と品質の調整に使います。通知後の起動待ち時間を保証する設定ではありません。設定変更だけで改善したと判断せず、新しい実メッセージで3段階を再計測します。[モデルと思考量](https://learn.chatgpt.com/docs/models)
+
 ## Node版の接続の流れ
 
 1. READMEの手順でLINEチャネル、HTTPS公開URL、管理者接続パスフレーズを設定し、`backend: "dot"` でブリッジを起動します。HTTPSリバースプロキシから `/mcp`、`/.well-known/`、`/oauth/`、LINE Webhookの各パスを転送します。
