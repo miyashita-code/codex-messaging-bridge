@@ -165,3 +165,62 @@ test('existing reply state is excluded by the adapter and a completed source is 
 test('reply length follows the fixed platform kind before any send reservation',async()=>{
  for(const [reply_kind,max] of [['discord_reply_dm',1800],['discord_reply_to_mention',500]]){const s=setup();s.messages[0].reply_kind=reply_kind;const a=await wait(s);await assert.rejects(reply(s,a,'x'.repeat(max+1)),e=>e.code==='CLOUD_AGENT_INVALID_ARGUMENTS');assert.equal(s.sends.length,0);assert.equal(JSON.parse(s.state().value).claim.state,'claimed');}
 });
+test('wait projects bounded same-conversation context without persisting history in the lease or fence',async()=>{
+ const s=setup(),history={messages:[{role:'user',content:'remember private number 763',timestamp:new Date().toISOString(),replyToken:'never-context-token'},{role:'assistant',content:'private answer 763',timestamp:new Date().toISOString()}],truncated:true,botToken:'never-context-token'};
+ const reads=[];s.adapters.readConversationContext=async(_env,message,options)=>{reads.push({message,options});return history;};
+ const a=await wait(s);assert.deepEqual(a.conversation_context,{messages:history.messages.map(({role,content,timestamp})=>({role,content,timestamp})),truncated:true});assert.equal(reads.length,1);assert.equal(reads[0].message.source_key,SOURCE);assert.equal(reads[0].message.conversation_key,'line:owner');assert.equal(reads[0].options.limit,12);assert.equal(reads[0].options.max_chars,24000);assert.ok(Number.isSafeInteger(reads[0].options.deadline_ms));
+ const b=await wait(s,{lease_id:a.lease_id});assert.equal(b.claim_id,a.claim_id);assert.equal(reads.length,2);assert.ok(!JSON.stringify(a).includes('never-context-token'));
+ const stored=JSON.stringify(s.db.prepare('SELECT * FROM bridge_runtime').all());assert.ok(!stored.includes('private number'));assert.ok(!stored.includes('private answer'));assert.ok(!stored.includes('never-context-token'));
+});
+test('context loading cannot disclose history after a source permission or conversation changes',async()=>{
+ for(const change of ['revoked','conversation']){
+  const s=setup();s.adapters.readConversationContext=async()=>{if(change==='revoked')s.setApproved(false);else s.messages[0].conversation_key='line:another';return{messages:[{role:'assistant',content:'private previous reply',timestamp:new Date().toISOString()}]};};
+  if(change==='revoked'){const result=await wait(s);assert.equal(result.status,'source_unavailable');assert.equal('conversation_context' in result,false);assert.equal('content' in result,false);assert.equal(JSON.parse(s.state().value).claim,null);}
+  else await assert.rejects(wait(s),e=>e.code==='CLOUD_AGENT_SOURCE_CHANGED');
+ }
+});
+test('expired leases cannot return a context read that finished after ownership was lost',async()=>{
+ const s=setup();s.adapters.readConversationContext=async()=>{s.edit(value=>{value.lease_until=0;});return{messages:[{role:'assistant',content:'private previous reply',timestamp:new Date().toISOString()}]};};
+ const result=await wait(s);assert.equal(result.status,'lease_lost');assert.equal('conversation_context' in result,false);assert.equal('content' in result,false);
+});
+test('context read failures preserve the claim for a safe retry and never expose adapter errors',async()=>{
+ const s=setup();s.adapters.readConversationContext=async()=>{throw Error('private history backend detail');};
+ await assert.rejects(wait(s),e=>e.code==='CLOUD_AGENT_CONTEXT_UNAVAILABLE'&&!String(e).includes('private history'));
+ const saved=JSON.parse(s.state().value),id=saved.claim.id;assert.equal(saved.claim.state,'claimed');assert.equal(s.sends.length,0);
+ s.adapters.readConversationContext=async()=>({messages:[]});const result=await wait(s,{lease_id:saved.lease_id});assert.equal(result.claim_id,id);assert.deepEqual(result.conversation_context,{messages:[],truncated:false});
+});
+test('oversized, malformed or instruction-role history is refused rather than passed to the model',async()=>{
+ const item={role:'user',content:'private fixture',timestamp:new Date().toISOString()};
+ for(const history of [{messages:[{...item,role:'system'}]},{messages:Array.from({length:13},()=>item)},{messages:Array.from({length:3},()=>({...item,content:'x'.repeat(9000)}))},{messages:[{...item,timestamp:'invalid'}]}]){
+  const s=setup();s.adapters.readConversationContext=async()=>history;await assert.rejects(wait(s),e=>e.code==='CLOUD_AGENT_INVALID_CONTEXT');assert.equal(JSON.parse(s.state().value).claim.state,'claimed');assert.equal(s.sends.length,0);
+ }
+});
+test('a stalled context read respects the wait deadline and retains its unsent claim',async()=>{
+ const s=setup();s.adapters.readConversationContext=async()=>new Promise(()=>{});const start=Date.now(),result=await wait(s,{wait_ms:20});assert.equal(result.status,'empty');assert.ok(Date.now()-start<500);assert.equal(JSON.parse(s.state().value).claim.state,'claimed');assert.equal(s.sends.length,0);
+});
+test('only a confirmed newly sent reply records its user and assistant pair once',async()=>{
+ const s=setup(),records=[];s.adapters.recordConversationReply=async(_env,message,result)=>{
+  assert.equal(JSON.parse(s.db.prepare("SELECT value FROM bridge_runtime WHERE key LIKE '%:source:%'").get().value).status,'completed');records.push({message,result});
+ };
+ const a=await wait(s),result=await reply(s,a,'confirmed private reply');assert.equal(result.status,'completed');assert.equal(result.context_recorded,true);assert.equal(records.length,1);assert.equal(records[0].message.source_key,SOURCE);assert.equal(records[0].message.content,'approved private fixture');assert.deepEqual(records[0].result,{content:'confirmed private reply',status:'completed'});
+ const duplicate=await reply(s,a,'confirmed private reply');assert.equal(duplicate.duplicate,true);assert.equal(duplicate.context_recorded,true);assert.equal(records.length,1);assert.equal(s.sends.length,1);assert.ok(!JSON.stringify(s.db.prepare('SELECT * FROM bridge_runtime').all()).includes('confirmed private reply'));
+});
+test('uncertain, failed, reserved or existing platform replies cannot create invented conversation history',async()=>{
+ for(const outcome of ['unknown','failed','reserved','duplicate','throw']){
+  const s=setup();let records=0;s.adapters.recordConversationReply=async()=>{records++;};s.adapters.sendReply=async()=>{if(outcome==='throw')throw Error('private send error');return outcome==='duplicate'?{status:'completed',duplicate:true}:{status:outcome};};
+  const a=await wait(s),result=await reply(s,a);assert.equal(result.status,outcome==='duplicate'?'completed':outcome==='throw'?'unknown':outcome);assert.equal(records,0);assert.equal((await reply(s,a)).duplicate,true);assert.equal(records,0);
+ }
+});
+test('history persistence failure preserves a completed send and its duplicate receipt without retrying',async()=>{
+ const s=setup();let records=0;s.adapters.recordConversationReply=async()=>{records++;throw Error('private history storage failure');};
+ const a=await wait(s),result=await reply(s,a);assert.equal(result.status,'completed');assert.equal(result.context_recorded,false);assert.equal(result.requires_review,undefined);assert.ok(!JSON.stringify(result).includes('private history'));
+ const duplicate=await reply(s,a);assert.equal(duplicate.status,'completed');assert.equal(duplicate.duplicate,true);assert.equal(duplicate.context_recorded,false);assert.equal(records,1);assert.equal(s.sends.length,1);assert.equal(JSON.parse(s.state().value).claim,null);
+});
+test('status exposes only the last context persistence boolean independently of a completed send',async()=>{
+ for(const recorded of [true,false]){
+  const s=setup();assert.equal((await cloudAgentStatus(s.env,OWNER)).last_context_recorded,null);
+  s.adapters.recordConversationReply=async()=>{if(!recorded)throw Error('private storage detail');};const claim=await wait(s);await reply(s,claim,'private confirmed answer');
+  const status=await cloudAgentStatus(s.env,OWNER);assert.equal(status.last_reply_status,'completed');assert.equal(status.last_context_recorded,recorded);assert.ok(!JSON.stringify(status).includes('private'));assert.equal('conversation_context' in status,false);assert.equal('content_hash' in status,false);
+  s.edit(value=>{delete value.last_result.context_recorded;});assert.equal((await cloudAgentStatus(s.env,OWNER)).last_context_recorded,null);
+ }
+});

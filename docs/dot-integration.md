@@ -44,9 +44,9 @@ Sites版のowner用 `bridge_status.delivery_diagnostics` は、直近の許可�
 
 ### First-party cloud taskで待機・返信する実験経路
 
-dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがMCPで新着を待ち、本文を読んで返答を生成する経路も実装しています。初期検証は既存のnative cloud Work復旧taskを再利用する予定です。これはNode版の `backend: "codex"` をcloudへ移す操作ではなく、CodexのログインファイルやAPIキーを渡す必要はありません。CLIの `--target dot-cloud --mode codex` は引き続き拒否します。cloud Work task、一時background agent、Codex Cloud taskは実際の実行環境を確認して区別し、cloud taskが返答しただけで「Your dot本人」や「Cloud Codex」の実返信とは記録しません。[Cloudのtask](https://learn.chatgpt.com/docs/dots/tasks-and-memory)、[Cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments)
+dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがMCPで新着を待ち、本文を読んで返答を生成する経路も実装しています。実環境では既存のnative cloud Work復旧taskを再利用しています。これはNode版の `backend: "codex"` をcloudへ移す操作ではなく、CodexのログインファイルやAPIキーを渡す必要はありません。CLIの `--target dot-cloud --mode codex` は引き続き拒否します。cloud Work task、一時background agent、Codex Cloud taskは実際の実行環境を確認して区別し、cloud taskが返答しただけで「Your dot本人」や「Cloud Codex」の実返信とは記録しません。[Cloudのtask](https://learn.chatgpt.com/docs/dots/tasks-and-memory)、[Cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments)
 
-利用者がこの返信runtimeを選んだ場合だけ、Sitesの本人接続から次の2ツールを使います。Workerはモデルを呼ばず、受信・認可・claim・送信だけを担当します。**この経路のnative LINE / Discord E2E、待機の継続、停止後の自動復旧は未検証です。** 先に確認したMCP Events経由のdot返信や、ローカルCodexの実績とは分けて評価します。
+利用者がこの返信runtimeを選んだ場合だけ、Sitesの本人接続から次の2ツールを使います。Workerはモデルを呼ばず、受信・認可・claim・送信だけを担当します。実LINE / Discord返信とlocal cloud-chat panelを閉じた後の継続を確認しました。**無期限の待機と停止後の自動復旧は未検証です。** 先に確認したMCP Events経由のdot返信や、ローカルCodexの実績とは分けて評価します。
 
 | ツール | 動作 |
 | --- | --- |
@@ -56,6 +56,8 @@ dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがM
 有効化にはSites runtime設定の `CLOUD_AGENT_ENABLED=true` と、協調切替時刻のISO timestamp `CLOUD_AGENT_AFTER` が必要です。設定を揃えて配備し、実際のcloud taskでツール発見・本人認証・ `bridge_status.cloud_agent` を確認します。activation watermarkより前の入力や、既に返信actionが存在する入力を再送対象にしません。保存済みwatermarkは後ろへ戻らず、環境設定のrollbackで過去入力を再開しません。claim・送信記録を削除して未処理に見せる操作もしません。
 
 新しいconsumerは1つだけにします。既存dot側の返信イベント購読とtask指示を記録し、進行中の処理を完了してから、所有する返信consumerだけをpause・購読解除します。チャネルの `LINE_ENABLE_EVENTS` / `DISCORD_ENABLE_EVENTS` は新着取込にも使うため、購読解除の代わりに無効化しません。本人・送信者allowlist・会話制限は維持し、新たな定期jobや権限を追加せず、既存の復旧taskを再利用します。毎時fallbackを設定・実行できることは、即レスや常駐の証拠にはなりません。
+
+同じ会話の確定済み入力・返信を暗号化して最大6往復/12メッセージ/24,000文字保存し、次のwaitの `conversation_context` へ渡します。owner・Bot・チャネル種別・会話の境界を保ち、Your dot本人の記憶とは区別します。モデルは返された同会話履歴だけを使い、運用chatや別会話の事実を混ぜません。30日より古い履歴は読取対象外、暗号文の削除は次の成功write時のlazy cleanupです。`context_recorded:false` でも完了済み送信は再送しません。
 
 wait中のDiscord回収は既存cursor・収集lease・認可・429 cooldownを共有し、GETによる取込と永続化だけを行います。LINE token更新・LINE再送・callback drainは行いません。有効化中の `/runtime/tick` はstandbyを返し、残存browser tabからも回収・送信しません。受信本文を信頼済みの指示として扱わず、会話ごとの非公開contextを分け、空・busy・lease喪失時に勝手な送信やconsumerの奪取をしないようtaskへ指示します。送信結果不明・失敗・予約済みの入力は再送せず、確認待ちとして残します。
 

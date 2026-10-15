@@ -1,6 +1,7 @@
 import {cloudInbox} from './cloud-inbox.js';
 import { maintainTool, maintainCloud, collectCloudDiscord, cloudAgentDiscordEnv, discordRequestTimeoutMs, cloudRuntimePage, cloudRuntimeStatus } from './cloud-runtime.js';
 import {cloudAgentTools,waitForMessage,replyToClaim,cloudAgentStatus,cloudAgentFencePrefix,CloudAgentError} from './cloud-agent.js';
+import {readConversationContext,recordConversationReply} from './conversation-context.js';
 import { lineWebhook, lineTools, lineCall, lineConfigured, lineSource, requireLine, LineFault } from './line.js';
 import { proxyMcp, proxyConfigured } from './proxy.js';
 import { eventService, EventError, VERSION as MCP2_VERSION } from './events.js';
@@ -222,12 +223,31 @@ function cloudAgentAdapters(req,ctx){return {
  collection_background_supported:typeof ctx?.waitUntil==='function',
  collectDiscord:env=>{const task=collectCloudDiscord(env,{discord,events,configured,source:'cloud_agent'});if(typeof ctx?.waitUntil==='function')ctx.waitUntil(task.catch(()=>undefined));return task;},
  readCandidate:(env,args)=>{const task=readCloudCandidate(env,args);if(typeof ctx?.waitUntil==='function')ctx.waitUntil(task.catch(()=>undefined));return task;},
+ readConversationContext:(env,message,options={})=>{
+  const task=(async()=>{
+   const owner=authenticate(req,env),fresh=await authorizedContextSource(cloudAgentDiscordEnv(env,options),message);
+   return readConversationContext(env,owner,fresh,options);
+  })();
+  if(typeof ctx?.waitUntil==='function')ctx.waitUntil(task.catch(()=>undefined));return task;
+ },
+ recordConversationReply:async(env,message,result)=>{
+  const owner=authenticate(req,env),fresh=await authorizedContextSource(cloudAgentDiscordEnv(env),message),parsed=cloudSourceKey(fresh.source_key);
+  const actionKey=(parsed.kind==='line_reply'?'linereply:':parsed.kind==='discord_reply_dm'?'dmreply:':'reply:')+parsed.id;
+  const action=await dbFirst(env,'SELECT status FROM actions WHERE action_key=?',actionKey);
+  if(result?.status!=='completed'||action?.status!=='completed')throw new Fault('CLOUD_CONTEXT_REPLY_UNCONFIRMED',409);
+  return recordConversationReply(env,owner,fresh,result);
+ },
  sendReply:async(env,candidate,content)=>{
   const parsed=cloudSourceKey(candidate.source_key);
   if(parsed.kind!==candidate.reply_kind||parsed.id!==candidate.source_id)throw new Fault('CLOUD_SOURCE_MISMATCH',403);
   return callTool(parsed.kind,{...(parsed.kind==='line_reply'?{event_id:parsed.id}:{channel_id:parsed.channelId,message_id:parsed.id}),content},req,env,ctx);
  },
 };}
+async function authorizedContextSource(env,message){
+ const fresh=await readCloudSource(env,message.source_key,0);
+ if(!fresh||['source_key','source_id','conversation_key','reply_kind','content','timestamp'].some(key=>fresh[key]!==message[key]))throw new Fault('CLOUD_CONTEXT_SOURCE_UNAVAILABLE',403);
+ return fresh;
+}
 async function recordCloudAgentRead(env,result){
  // Only a message actually returned by the wait tool is a model-visible read.
  // Candidate scans and internal authorization reads retain their old meaning.

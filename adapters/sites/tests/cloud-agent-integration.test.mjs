@@ -54,8 +54,8 @@ async function rpc(env,method,params={},owner='owner',ctx){
  return {response,body,value:body.result?.content?.[0]?.text?JSON.parse(body.result.content[0].text):null};
 }
 const tool=(env,name,args={},owner,ctx)=>rpc(env,'tools/call',{name,arguments:args},owner,ctx);
-async function lineIntake(s,{token='synthetic-reply-token',content='untrusted LINE fixture',eventId=EVENT}={}){
- const body=JSON.stringify({destination:LINE_BOT,events:[{webhookEventId:eventId,type:'message',timestamp:Date.now(),source:{type:'user',userId:USER},message:{id:'fixture-platform-message',type:'text',text:content},...(token?{replyToken:token}:{})}]});
+async function lineIntake(s,{token='synthetic-reply-token',content='untrusted LINE fixture',eventId=EVENT,userId=USER}={}){
+ const body=JSON.stringify({destination:LINE_BOT,events:[{webhookEventId:eventId,type:'message',timestamp:Date.now(),source:{type:'user',userId},message:{id:'fixture-platform-message',type:'text',text:content},...(token?{replyToken:token}:{})}]});
  const signature=createHmac('sha256',s.env.LINE_CHANNEL_SECRET).update(body).digest('base64');
  const response=await worker.fetch(new Request('https://site.example/webhooks/line',{method:'POST',headers:{'content-type':'application/json','x-line-signature':signature},body}),s.env);
  assert.equal(response.status,200);
@@ -65,7 +65,7 @@ async function discordIntake(s,scope='dm',content='untrusted Discord fixture'){
  const channel=scope==='dm'?DM:CHANNEL;
  const message={id,channel_id:channel,author:{id:AUTHOR,bot:false},mentions:scope==='dm'?[]:[{id:BOT}],content,timestamp:new Date(s.now).toISOString()};
  s.messages.set(channel+':'+id,message);
- if(scope==='dm')s.raw.prepare("INSERT INTO dm_contacts (channel_id,user_id,guild_id,owner_site_id,source_channel_id,source_message_id,delivery_status,authorized_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?)").run(DM,AUTHOR,GUILD,'owner',CHANNEL,'7'.repeat(18),s.now-60000,s.now-60000);
+ if(scope==='dm')s.raw.prepare("INSERT OR IGNORE INTO dm_contacts (channel_id,user_id,guild_id,owner_site_id,source_channel_id,source_message_id,delivery_status,authorized_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?)").run(DM,AUTHOR,GUILD,'owner',CHANNEL,'7'.repeat(18),s.now-60000,s.now-60000);
  await events.enqueue(s.env,{guild_id:GUILD,channel_id:channel,message_id:id,...(scope==='dm'?{scope:'dm'}:{})});
  return message;
 }
@@ -103,6 +103,42 @@ test('LINE wait claims one source without reply tokens, and replies once through
  const duplicate=await tool(s.env,REPLY,replyArgs(claim));assert.equal(duplicate.value.duplicate,true);
  assert.equal(s.sent.length,1);assert.equal(s.sent[0].url,'https://api.line.me/v2/bot/message/push');assert.equal(s.sent[0].body.to,USER);
  assert.equal(s.sent[0].body.messages[0].text,'Cloud Codex reply');
+});
+
+test('fresh LINE claims recover only encrypted confirmed context from the same approved conversation',async t=>{
+ const s=setup(t);await lineIntake(s,{content:'Remember the synthetic code PEACH-42'});
+ const first=(await tool(s.env,WAIT,{wait_ms:0})).value;assert.deepEqual(first.conversation_context.messages,[]);
+ const sent=await tool(s.env,REPLY,replyArgs(first,'I will remember PEACH-42'));assert.equal(sent.value.status,'completed');
+ const memory=s.raw.prepare("SELECT key,value FROM bridge_runtime WHERE key LIKE 'cloud_context:v1:%'").get();assert.ok(memory);
+ assert.equal(memory.value.includes('PEACH-42'),false);assert.equal(memory.key.includes(USER),false);
+ await lineIntake(s,{eventId:EVENT+'NEXT',content:'What code did I give you?'});
+ const next=(await tool({...s.env},WAIT,{wait_ms:0,lease_id:first.lease_id})).value;assert.equal(next.status,'message');
+ assert.deepEqual(next.conversation_context.messages.map(message=>[message.role,message.content]),[['user','Remember the synthetic code PEACH-42'],['assistant','I will remember PEACH-42']]);
+ const other='U'+'8'.repeat(32);s.env.LINE_ALLOWED_USER_IDS=USER+','+other;
+ await tool(s.env,REPLY,replyArgs(next,'PEACH-42'));
+ await lineIntake(s,{eventId:EVENT+'OTHER',content:'What private code?',userId:other});
+ const different=(await tool(s.env,WAIT,{wait_ms:0,lease_id:first.lease_id})).value;
+ assert.equal(different.status,'message');assert.deepEqual(different.conversation_context.messages,[]);
+ assert.equal(JSON.stringify(different).includes('PEACH-42'),false);
+});
+
+test('failed and ambiguous LINE sends never enter successful conversation context',async t=>{
+ for(const status of [400,500]){
+  const s=setup(t);s.env.LINE_FETCH=async()=>Response.json({message:'synthetic rejection'},{status});
+  await lineIntake(s,{content:'unconfirmed private input'});const claim=(await tool(s.env,WAIT,{wait_ms:0})).value;
+  const result=(await tool(s.env,REPLY,replyArgs(claim,'unconfirmed private answer'))).value;assert.notEqual(result.status,'completed');
+  assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key LIKE 'cloud_context:v1:%'").get().n,0);
+ }
+});
+
+test('context read rechecks current LINE sender authorization after a claim is reserved',async t=>{
+ const s=setup(t);await lineIntake(s);const first=(await tool(s.env,WAIT,{wait_ms:0})).value;
+ await tool(s.env,REPLY,replyArgs(first,'private authorized context'));
+ await lineIntake(s,{eventId:EVENT+'REVOKE'});
+ const prepare=s.env.DB.prepare.bind(s.env.DB);let revoked=false;
+ s.env.DB.prepare=sql=>({bind(...values){const statement=prepare(sql).bind(...values);return {...statement,async run(){const result=await statement.run();if(!revoked&&sql.startsWith('UPDATE bridge_runtime SET value=')&&String(values[0]).includes('"state":"claimed"')){revoked=true;s.env.LINE_ALLOWED_USER_IDS='U'+'9'.repeat(32);}return result;}};}});
+ const result=await tool(s.env,WAIT,{wait_ms:0,lease_id:first.lease_id});assert.equal(revoked,true);
+ assert.equal(result.value.status==='message',false);assert.equal(JSON.stringify(result.body).includes('private authorized context'),false);
 });
 
 test('claim and lease mismatches and arbitrary recipient arguments never send',async t=>{
@@ -186,6 +222,29 @@ test('Discord DM claims reuse the current contact authorization and fixed-channe
  assert.equal(s.sent.length,1);assert.equal(s.sent[0].platform,'discord');assert.equal(s.sent[0].channel,DM);
  assert.deepEqual(s.sent[0].body.allowed_mentions,{parse:[],replied_user:false});assert.equal(s.sent[0].body.enforce_nonce,true);
  assert.equal(s.raw.prepare('SELECT status FROM actions WHERE action_key=?').get('dmreply:'+message.id).status,'completed');
+});
+
+test('Discord continuation recalls the same DM but never copies its context to a guild claim',async t=>{
+ const s=setup(t,{discord:true});await discordIntake(s,'dm','private DM code PEAR-17');
+ const first=(await tool(s.env,WAIT,{wait_ms:0})).value;assert.deepEqual(first.conversation_context.messages,[]);
+ const result=(await tool(s.env,REPLY,replyArgs(first,'I remember PEAR-17'))).value;assert.equal(result.status,'completed');assert.equal(result.context_recorded,true);
+ s.now+=1;await discordIntake(s,'dm','What was my code?');
+ const next=(await tool(s.env,WAIT,{wait_ms:0,lease_id:first.lease_id})).value;assert.equal(next.reply_kind,'discord_reply_dm');
+ assert.deepEqual(next.conversation_context.messages.map(message=>message.content),['private DM code PEAR-17','I remember PEAR-17']);
+ await tool(s.env,REPLY,replyArgs(next,'PEAR-17'));
+ s.now+=1;await discordIntake(s,'guild','What private DM code?');
+ const guild=(await tool(s.env,WAIT,{wait_ms:0,lease_id:first.lease_id})).value;assert.equal(guild.reply_kind,'discord_reply_to_mention');
+ assert.deepEqual(guild.conversation_context.messages,[]);assert.equal(JSON.stringify(guild).includes('PEAR-17'),false);
+});
+
+test('a current Discord channel policy withdrawal blocks retained context before claim delivery',async t=>{
+ const s=setup(t,{discord:true});await discordIntake(s,'guild','private authorized guild context');
+ const first=(await tool(s.env,WAIT,{wait_ms:0})).value;await tool(s.env,REPLY,replyArgs(first,'authorized guild answer'));
+ s.now+=1;await discordIntake(s,'guild','followup');
+ const prepare=s.env.DB.prepare.bind(s.env.DB);let revoked=false;
+ s.env.DB.prepare=sql=>({bind(...values){const statement=prepare(sql).bind(...values);return {...statement,async run(){const result=await statement.run();if(!revoked&&sql.startsWith('UPDATE bridge_runtime SET value=')&&String(values[0]).includes('"state":"claimed"')){revoked=true;s.env.DISCORD_ALLOWED_CHANNEL_IDS='8'.repeat(18);}return result;}};}});
+ const result=await tool(s.env,WAIT,{wait_ms:0,lease_id:first.lease_id});assert.equal(revoked,true);
+ assert.equal(result.value.status==='message',false);assert.equal(JSON.stringify(result.body).includes('authorized guild answer'),false);
 });
 
 test('Discord stop requests observed after claiming are never answered',async t=>{

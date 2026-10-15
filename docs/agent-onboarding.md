@@ -2,7 +2,7 @@
 
 このリポジトリをYour dotへ渡すときの入口は、ルートの [`AGENTS.md`](../AGENTS.md) です。Codexはこの名前のファイルを作業開始前に読みます。Your dotへ渡す際も、以下の指示で明示的に読ませます。[公式のAGENTS.md案内](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
 
-目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。Sites版では、2026-10-15にローカル受信サービスを停止した実LINE / Discordメンション・本人DMへのYour dot自動返信を確認しました。その後、利用者が明示的に許容したnative cloud Workによる返信も、localサービス停止・browser tickのstandby・localのcloud chat panel閉鎖後に確認しました。両者の返信runtimeを区別し、物理PC電源断・24時間連続稼働・taskの自動restartは未検証として扱います。任意のNode daemonをcloud computerに置く方式とは分け、各利用者の環境で復旧・購読・実返信まで検証します。[実測記録](cloud-computer.md#sitesでの移行検証2026年10月15日)、[native cloud Work待受](../adapters/sites/README.md#programmatic-waits-in-native-cloud-work)
+目指す流れは **cloud側で準備 → 接続済みlocal PCでアカウント設定 → cloud側で接続・実機確認 → PCに依存しない稼働の確認** です。Sites版では、2026-10-15にローカル受信サービスを停止した実LINE / Discordメンション・本人DMへのYour dot自動返信を確認しました。その後、cloud側で返信担当を変更してよいという利用者の許可を受け、native cloud Workによる返信も、localサービス停止・browser tickのstandby・localのcloud chat panel閉鎖後に確認しました。実際の検証runtimeはCodex Cloudではなくcloud Workです。両者の返信runtimeを区別し、物理PC電源断・24時間連続稼働・taskの自動restartは未検証として扱います。任意のNode daemonをcloud computerに置く方式とは分け、各利用者の環境で復旧・購読・実返信まで検証します。[実測記録](cloud-computer.md#sitesでの移行検証2026年10月15日)、[native cloud Work待受](../adapters/sites/README.md#programmatic-waits-in-native-cloud-work)
 
 ## そのまま渡せる依頼
 
@@ -61,9 +61,11 @@ Your dot本人の返信を希望する利用者へ、別runtimeを無断で代�
 
 実環境では、native cloud Workのprogrammaticな `functions.exec` code cellから、発見済みの `bridge_wait_for_message` を呼び出せました。初回probeの `busy` は既存leaseとの競合を防いだ結果で、協調的な受信側restart後はlease取得と新規メッセージへの実返信が成功しました。各利用者の環境で実在するorchestration APIとMCP tool bindingを発見し、そのschemaに従います。接続先固有の完全なAPI名をこのrepoからコピーして推測しません。
 
-待受は1回最大25秒、consumer leaseは120秒です。空の結果を毎回モデルへ戻す代わりに、**1 code cellを最大5分、またはplatformのより短い上限まで**に区切って繰り返し、新着 `message` があれば直ちにモデルへ返します。各callに返された `lease_id` を保持して更新し、受け取った `claim_id` と同じleaseで `bridge_reply_to_claim` を呼びます。期限到達時は短いidle結果でyieldし、platformが継続を許す範囲で次のbounded待受へ進みます。`busy` のretry delayを尊重し、`lease_lost` では古いleaseとclaimを捨てて、lease指定なしのwaitで再取得します。他consumerのleaseを消したり、古いclaimや過去メッセージを再送したりしません。無期限code cell、実行・利用上限を回避する連続restart、追加jobによる延命は行いません。
+待受は1回最大25秒、consumer leaseは120秒です。空の結果を毎回モデルへ戻す代わりに、**1 code cellを最大5分、またはplatformのより短い上限まで**に区切って繰り返し、新着 `message` があれば直ちにモデルへ返します。各callに返された `lease_id` を保持して更新し、モデルが返信を生成したら、次のcellで受け取った `claim_id` と同じleaseの `bridge_reply_to_claim` を呼び、`completed` を確認した直後に同じcell内で次の待受を始めます。返信完了だけでモデルへ戻る余分な往復を避け、未完了・結果不明なら再送せず確認へ戻します。期限到達時は短いidle結果でyieldし、platformが継続を許す範囲で次のbounded待受へ進みます。`busy` のretry delayを尊重し、`lease_lost` では古いleaseとclaimを捨てて、lease指定なしのwaitで再取得します。他consumerのleaseを消したり、古いclaimや過去メッセージを再送したりしません。無期限code cell、実行・利用上限を回避する連続restart、追加jobによる延命は行いません。
 
 既存の `CLOUD_AGENT_ENABLED` / `CLOUD_AGENT_AFTER`、本人allowlist、channel policyを維持します。有効化は所有者の既存reply consumerとの協調切替で行い、activation watermarkを巻き戻しません。Node CLIの `--target dot-cloud` が `--mode codex` を拒否する規定は変わりません。この経路は一般CLI backendをcloudへ移植するものではありません。
+
+会話継続も実機で確認します。waitの `conversation_context` は、現在認可された同一会話の暗号化済み確定履歴です。最大6往復・12メッセージ・24,000文字で、Your dotの個人記憶や運用chatとは分けます。モデルへこの履歴と新着本文を渡し、会話にしかない前提を次の入力で正しく参照できるかを試します。`completed` はAPI配送成功であり、回答内容や履歴機能の成功は別に検証します。
 
 同日の実測では、local bridgeサービス停止・browser tickのstandby・localのcloud chat panel閉鎖後に、LINEは5.8秒、同時入力のDiscordは21.3秒、受信側の再開後にDiscord単独で11.6秒の返信を確認しました。各1回の観測であり、モデル間の因果比較や応答時間の保証には使いません。cloud Workがdesktop appを閉じた後も続けられることは公式に案内されていますが、無期限待受や自動restartの保証は確認できていません。[Cloud実行](https://learn.chatgpt.com/docs/use-chatgpt)、[長時間作業](https://learn.chatgpt.com/docs/long-running-work)
 
