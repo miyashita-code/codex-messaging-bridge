@@ -102,7 +102,7 @@ test('LINE timings distinguish delivered outbox update, captured successful tool
  assert.equal(Date.parse(record.source_recorded_at),base);assert.equal(Date.parse(record.callback_delivery_updated_at),base+3000);
  assert.equal(Date.parse(record.first_read_tool_at),base+60000);assert.equal(Date.parse(record.reply_reserved_at),base+65000);
  assert.equal(Date.parse(record.first_send_attempt_at),base+65000);assert.equal(Date.parse(record.confirmed_completed_at),base+67000);
- assert.deepEqual(record.interval_ms,{recorded_to_callback:3000,callback_to_first_read_tool:57000,first_read_tool_to_reply_reserved:5000,reply_reserved_to_confirmed_completed:2000,first_send_attempt_to_confirmed_completed:2000});
+ assert.deepEqual(record.interval_ms,{occurred_to_recorded:0,recorded_to_callback:3000,callback_to_first_read_tool:57000,first_read_tool_to_reply_reserved:5000,reply_reserved_to_confirmed_completed:2000,first_send_attempt_to_confirmed_completed:2000});
  const stored=JSON.stringify(observations(s)),status=JSON.stringify(result);
  for(const secret of [BODY,TOKEN,REPLY_TOKEN,s.env.LINE_CHANNEL_SECRET,'fixture-events']){assert.ok(!stored.includes(secret));assert.ok(!status.includes(secret));}
 });
@@ -177,4 +177,55 @@ test('status is bounded, absent observations remain null, and TTL deletes only t
  for(const key of ['cloud_maintenance','line_reply_retry:fixture','cloud_cursor:fixture'])s.raw.prepare('INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)').run(key,'keep',0);
  await pruneDeliveryDiagnostics(s.env);assert.equal(observations(s).length,0);
  for(const key of ['cloud_maintenance','line_reply_retry:fixture','cloud_cursor:fixture'])assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get(key).value,'keep');
+});
+
+test('LINE occurrence comes from the platform event row and separates ingress delay from stored-to-read delay',async t=>{
+ const base=Date.now();t.mock.method(Date,'now',()=>base);const s=setup();await subscribe(s);await intake(s.env);
+ s.raw.prepare('UPDATE cloud_line_messages SET occurred_at=? WHERE event_id=?').run(base-62640,E);
+ // The LINE event row is authoritative even if the notification copy differs.
+ s.raw.prepare('UPDATE event_records SET occurred_at=?').run(new Date(base-1000).toISOString());
+ const result=await diagnostics(s),record=result.messages[0];assert.equal(record.source_occurred_at,new Date(base-62640).toISOString());assert.equal(record.source_recorded_at,new Date(base).toISOString());assert.equal(record.interval_ms.occurred_to_recorded,62640);assert.equal(record.first_read_tool_at,null);assert.equal(record.timing_order_warning,false);
+ assert.equal(result.source_occurrence_observation,'platform_event_timestamp_not_message_composition_or_model_start');assert.equal(result.trigger_origin,'not_observed');assert.equal(s.posts.length,0);assert.equal(observations(s).length,0);
+ for(const secret of [BODY,TOKEN,REPLY_TOKEN,LINE_U,LINE_B])assert.equal(JSON.stringify(result).includes(secret),false);
+});
+
+for(const scope of ['guild','dm'])test(`Discord ${scope} occurrence parses its existing event ISO timestamp without a network read`,async t=>{
+ const base=Date.now();t.mock.method(Date,'now',()=>base);const s=setup();if(scope==='dm')admitDm(s);const channelId=scope==='dm'?DM:C;
+ await events.enqueue(s.env,{guild_id:G,channel_id:channelId,message_id:M,...(scope==='dm'?{scope:'dm'}:{})});
+ await recordDeliveryTiming(s.env,{channel:scope==='dm'?'discord_dm':'discord_guild',source_id:M,channel_id:channelId,guild_id:G},'read_tool');
+ s.raw.prepare('UPDATE event_records SET occurred_at=?').run(new Date(base-12345).toISOString());let requests=0;s.onDiscordFetch=()=>{requests++;};
+ const result=await diagnostics(s),record=result.messages[0];assert.equal(record.source_occurred_at,new Date(base-12345).toISOString());assert.equal(record.source_recorded_at,new Date(base).toISOString());assert.equal(record.interval_ms.occurred_to_recorded,12345);assert.equal(record.timing_order_warning,false);assert.equal(requests,0);
+ for(const secret of [BODY,TOKEN,REPLY_TOKEN,U,C,DM])assert.equal(JSON.stringify(result).includes(secret),false);
+});
+
+test('missing and invalid occurrence metadata stay null instead of becoming an epoch or a misleading duration',async()=>{
+ const s=setup();await intake(s.env);await recordDeliveryTiming(s.env,lineDiagnosticSource(E),'read_tool');
+ for(const value of ['not-a-time',-1,1.5,8640000000000001]){
+  s.raw.prepare('UPDATE cloud_line_messages SET occurred_at=? WHERE event_id=?').run(value,E);
+  const record=(await diagnostics(s)).messages[0];assert.equal(record.source_occurred_at,null);assert.equal(record.interval_ms.occurred_to_recorded,null);assert.equal(record.timing_order_warning,false);
+ }
+ const d=setup();await recordDeliveryTiming(d.env,{channel:'discord_guild',source_id:M,channel_id:C,guild_id:G},'read_tool');
+ let record=(await diagnostics(d)).messages[0];assert.equal(record.source_occurred_at,null);assert.equal(record.source_recorded_at,null);assert.equal(record.interval_ms.occurred_to_recorded,null);
+ await events.enqueue(d.env,{guild_id:G,channel_id:C,message_id:M});
+ for(const value of ['','invalid-time','0','2026-99-99T99:99:99.000Z','2026-02-30T00:00:00.000Z']){
+  d.raw.prepare('UPDATE event_records SET occurred_at=?').run(value);record=(await diagnostics(d)).messages[0];assert.equal(record.source_occurred_at,null);assert.equal(record.interval_ms.occurred_to_recorded,null);assert.equal(record.timing_order_warning,false);
+ }
+});
+
+test('negative occurred-to-recorded delays raise the existing timing warning for both platforms',async t=>{
+ const base=Date.now();t.mock.method(Date,'now',()=>base);
+ for(const platform of ['line','discord']){
+  const s=setup();
+  if(platform==='line'){await intake(s.env);await recordDeliveryTiming(s.env,lineDiagnosticSource(E),'read_tool');s.raw.prepare('UPDATE cloud_line_messages SET occurred_at=?').run(base+1000);}
+  else{await events.enqueue(s.env,{guild_id:G,channel_id:C,message_id:M});await recordDeliveryTiming(s.env,{channel:'discord_guild',source_id:M,channel_id:C,guild_id:G},'read_tool');s.raw.prepare('UPDATE event_records SET occurred_at=?').run(new Date(base+1000).toISOString());}
+  const record=(await diagnostics(s)).messages[0];assert.equal(record.source_occurred_at,new Date(base+1000).toISOString());assert.equal(record.interval_ms.occurred_to_recorded,-1000);assert.equal(record.timing_order_warning,true);
+ }
+});
+
+test('source occurrence fields keep owner and current source authorization boundaries',async()=>{
+ const s=setup();await intake(s.env);await recordDeliveryTiming(s.env,lineDiagnosticSource(E),'read_tool');assert.ok((await diagnostics(s)).messages[0].source_occurred_at);
+ for(const principal of [null,'','other'])assert.equal(await deliveryDiagnostics(s.env,principal),null);
+ s.env.LINE_ALLOWED_USER_IDS='';assert.deepEqual((await diagnostics(s)).messages,[]);
+ const d=setup();admitDm(d);await events.enqueue(d.env,{guild_id:G,channel_id:DM,message_id:M,scope:'dm'});await recordDeliveryTiming(d.env,{channel:'discord_dm',source_id:M,channel_id:DM,guild_id:G},'read_tool');assert.ok((await diagnostics(d)).messages[0].source_occurred_at);
+ d.raw.prepare('DELETE FROM dm_contacts').run();assert.deepEqual((await diagnostics(d)).messages,[]);
 });

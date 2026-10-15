@@ -1,17 +1,25 @@
-// Server-observed tool timings only. Never store message bodies, credentials,
-// callback URLs, raw errors or model/task-start claims in this namespace.
+// Server-observed tool timings plus the stored platform event timestamp.
+// Event occurrence is not message composition or model/task-start time.
+// Never store message bodies, credentials, callback URLs or raw errors here.
 const PREFIX='delivery_diag:v1:';
 const RETENTION_MS=7*86400000;
 const LIMIT=10;
 const ID=/^[0-9]{17,20}$/;
 const LINE_EVENT=/^[A-Za-z0-9_-]{8,100}$/;
 const LINE_USER=/^U[0-9a-f]{32}$/;
+const ISO_TIMESTAMP=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
 const PHASES={read_tool:['first_read_tool_at','last_read_tool_at'],send_attempt:['first_send_attempt_at','last_send_attempt_at'],confirmed_completed:['confirmed_completed_at']};
 const run=(env,sql,...args)=>env.DB.prepare(sql).bind(...args).run();
 const first=(env,sql,...args)=>env.DB.prepare(sql).bind(...args).first();
 const instant=value=>Number.isSafeInteger(value)&&value>=0&&value<=8640000000000000?value:null;
 const iso=value=>instant(value)===null?null:new Date(value).toISOString();
 const delta=(end,start)=>instant(end)===null||instant(start)===null?null:end-start;
+function platformInstant(value){
+ const match=typeof value==='string'&&ISO_TIMESTAMP.exec(value);if(!match)return null;
+ const [year,month,day,hour,minute,second]=match.slice(1).map(Number),days=[31,year%4===0&&(year%100!==0||year%400===0)?29:28,31,30,31,30,31,31,30,31,30,31];
+ if(month<1||month>12||day<1||day>days[month-1]||hour>23||minute>59||second>59)return null;
+ return instant(Date.parse(value));
+}
 async function namespace(env){
  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(env.BRIDGE_OWNER_SITE_ID));
  return PREFIX+Array.from(new Uint8Array(hash),b=>b.toString(16).padStart(2,'0')).join('')+':';
@@ -41,9 +49,9 @@ export async function recordDeliveryTiming(env,input,phase,at=Date.now()){
 }
 async function permittedSource(env,source,authorizeChannel){
  if(source.channel==='line'){
-  const row=await first(env,'SELECT user_id,created_at FROM cloud_line_messages WHERE event_id=?',source.source_id);
+  const row=await first(env,'SELECT user_id,occurred_at,created_at FROM cloud_line_messages WHERE event_id=?',source.source_id);
   if(!row||!LINE_USER.test(row.user_id)||!(env.LINE_ALLOWED_USER_IDS||'').split(',').includes(row.user_id))return null;
-  return {recordedAt:row.created_at,actionKey:'linereply:'+source.source_id};
+  return {occurredAt:instant(row.occurred_at),recordedAt:row.created_at,actionKey:'linereply:'+source.source_id};
  }
  if(source.guild_id!==env.DISCORD_GUILD_ID)return null;
  if(source.channel==='discord_dm'){
@@ -59,8 +67,9 @@ async function permittedSource(env,source,authorizeChannel){
    try{const ch=await authorizeChannel(env,source.channel_id);if(ch.id!==source.channel_id||ch.guild_id!==source.guild_id||!allowed.includes(ch.parent_id))return null;}catch{return null;}
   }
  }
- const row=await first(env,'SELECT created_at FROM event_records WHERE id=?',source.event_id);
- return {recordedAt:row?.created_at??null,actionKey:(source.channel==='discord_dm'?'dmreply:':'reply:')+source.source_id};
+ const row=await first(env,'SELECT occurred_at,created_at FROM event_records WHERE id=?',source.event_id);
+ const occurredAt=platformInstant(row?.occurred_at);
+ return {occurredAt,recordedAt:row?.created_at??null,actionKey:(source.channel==='discord_dm'?'dmreply:':'reply:')+source.source_id};
 }
 export async function deliveryDiagnostics(env,principal,{channel:authorizeChannel}={}){
  // bridge_status also serves initial setup before an owner is configured.
@@ -101,11 +110,11 @@ export async function deliveryDiagnostics(env,principal,{channel:authorizeChanne
    const action=await first(env,'SELECT status,created_at FROM actions WHERE action_key=?',permitted.actionKey);
    const callbackAt=accepted?.accepted_at??null,readAt=instant(value.first_read_tool_at),reservedAt=action?.created_at??null;
    const completedAt=action?.status==='completed'?instant(value.confirmed_completed_at):null;
-   const intervals={recorded_to_callback:delta(callbackAt,permitted.recordedAt),callback_to_first_read_tool:delta(readAt,callbackAt),first_read_tool_to_reply_reserved:delta(reservedAt,readAt),reply_reserved_to_confirmed_completed:delta(completedAt,reservedAt),first_send_attempt_to_confirmed_completed:delta(completedAt,instant(value.first_send_attempt_at))};
-   output.push({channel:source.channel,event_id:source.event_id,source_recorded_at:iso(permitted.recordedAt),notification_statuses:['pending','delivered','dead','cancelled'].filter(status=>accepted?.[status]===1),callback_delivery_updated_at:iso(callbackAt),first_read_tool_at:iso(readAt),last_read_tool_at:iso(value.last_read_tool_at),reply_reserved_at:iso(reservedAt),first_send_attempt_at:iso(value.first_send_attempt_at),last_send_attempt_at:iso(value.last_send_attempt_at),confirmed_completed_at:iso(completedAt),reply_status:['reserved','retryable','unknown','failed','completed'].includes(action?.status)?action.status:null,interval_ms:intervals,timing_order_warning:Object.values(intervals).some(value=>value!==null&&value<0)});
+   const intervals={occurred_to_recorded:delta(permitted.recordedAt,permitted.occurredAt),recorded_to_callback:delta(callbackAt,permitted.recordedAt),callback_to_first_read_tool:delta(readAt,callbackAt),first_read_tool_to_reply_reserved:delta(reservedAt,readAt),reply_reserved_to_confirmed_completed:delta(completedAt,reservedAt),first_send_attempt_to_confirmed_completed:delta(completedAt,instant(value.first_send_attempt_at))};
+   output.push({channel:source.channel,event_id:source.event_id,source_occurred_at:iso(permitted.occurredAt),source_recorded_at:iso(permitted.recordedAt),notification_statuses:['pending','delivered','dead','cancelled'].filter(status=>accepted?.[status]===1),callback_delivery_updated_at:iso(callbackAt),first_read_tool_at:iso(readAt),last_read_tool_at:iso(value.last_read_tool_at),reply_reserved_at:iso(reservedAt),first_send_attempt_at:iso(value.first_send_attempt_at),last_send_attempt_at:iso(value.last_send_attempt_at),confirmed_completed_at:iso(completedAt),reply_status:['reserved','retryable','unknown','failed','completed'].includes(action?.status)?action.status:null,interval_ms:intervals,timing_order_warning:Object.values(intervals).some(value=>value!==null&&value<0)});
    if(output.length>=LIMIT)break;
   }
-  return {available:true,limit:LIMIT,retention_days:7,read_observation:'successful_read_tool_entry_not_model_start',callback_observation:'earliest_delivered_outbox_updated_at',trigger_origin:'not_observed',messages:output};
+  return {available:true,limit:LIMIT,retention_days:7,source_occurrence_observation:'platform_event_timestamp_not_message_composition_or_model_start',read_observation:'successful_read_tool_entry_not_model_start',callback_observation:'earliest_delivered_outbox_updated_at',trigger_origin:'not_observed',messages:output};
  }catch{return {available:false,reason:'DIAGNOSTICS_UNAVAILABLE',messages:[]};}
 }
 export async function pruneDeliveryDiagnostics(env){

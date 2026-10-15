@@ -30,17 +30,18 @@ Discordも同じMCP endpointで使えます。イベントは `discord.message.c
 
 callbackの `2xx` は通知の受付であり、dotの返信処理開始の証明ではありません。処理は非同期で、通知が速く届いても開始まで数分待つ場合があり、即時応答は保証しません。[MCP Events](https://developers.openai.com/plugins/build/mcp-events)
 
-同じイベントについて、次の3段階を分けて計測します。
+同じイベントについて、次の段階を分けて計測します。
 
-1. LINE Webhookの受信・保存から、MCP callbackの `2xx` まで。
-2. callback受理から、dotの返信処理開始まで。最初の読取tool呼び出しは、観測できる開始の目安です。
-3. 返信処理開始から、LINE API送信完了と実アプリへの到着まで。
+1. LINE / Discordのplatform event timestampからクラウド保存まで。LINEのWebhook到達前とDiscordのREST回収待ちを含みます。
+2. LINE Webhookの受信・保存から、MCP callbackの `2xx` まで。
+3. callback受理から、dotの返信処理開始まで。最初の読取tool呼び出しは、観測できる開始の目安です。
+4. 返信処理開始から、LINE API送信完了と実アプリへの到着まで。
 
-dotのtask詳細設定にあるモデル・思考量は、生成時間と品質の調整に使います。通知後の起動待ち時間を保証する設定ではありません。設定変更だけで改善したと判断せず、新しい実メッセージで3段階を再計測します。[モデルと思考量](https://learn.chatgpt.com/docs/models)
+dotのtask詳細設定にあるモデル・思考量は、生成時間と品質の調整に使います。通知後の起動待ち時間を保証する設定ではありません。設定変更だけで改善したと判断せず、新しい実メッセージで各段階を再計測します。[モデルと思考量](https://learn.chatgpt.com/docs/models)
 
-Sites版のowner用 `bridge_status.delivery_diagnostics` は、直近の許可済みイベントについてcallback配信記録、最初の読取tool到達、返信予約、送信試行、送信完了の時刻を返します。読取未到達は `null` のまま表示し、本文・secret・callback URLは含めません。診断は直近7日・最大10件で、現在の送信者・会話ポリシーを再確認します。
+Sites版のowner用 `bridge_status.delivery_diagnostics` は、直近の許可済みイベントについてplatform発生、受信・保存、callback配信記録、最初の読取tool到達、返信予約、送信試行、送信完了の時刻を返します。読取未到達は `null` のまま表示し、本文・secret・callback URLは含めません。診断は直近7日・最大10件で、現在の送信者・会話ポリシーを再確認します。
 
-`first_read_tool_at` は成功した読取toolへ入ったサーバー時刻で、モデル起動時刻ではありません。手動の読取も観測されるため、E2Eの新着をこちらから読まず、dotの実行履歴と照合します。`confirmed_completed_at` は送信API成功後の時刻で、端末への表示は実アプリで確認します。未観測・負の時間差・診断取得失敗を、遅延ゼロや成功に読み替えません。
+`source_occurred_at` はplatformのイベント発生時刻で、入力を考え始めた時刻やモデル開始ではありません。`interval_ms.occurred_to_recorded` で保存までの時間を分け、欠損・不正な発生時刻は `null` とします。`first_read_tool_at` は成功した読取toolへ入ったサーバー時刻で、モデル起動時刻ではありません。手動の読取も観測されるため、E2Eの新着をこちらから読まず、dotの実行履歴と照合します。`confirmed_completed_at` は送信API成功後の時刻で、端末への表示は実アプリで確認します。未観測・負の時間差・診断取得失敗を、遅延ゼロや成功に読み替えません。
 
 ### First-party cloud taskで待機・返信する実験経路
 
