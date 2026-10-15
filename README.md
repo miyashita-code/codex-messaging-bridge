@@ -21,7 +21,11 @@ dotはcloudで動作条件を確認し、専用の非公開設定を準備しま
 
 ## Sitesクラウド版
 
-[Sites adapter](adapters/sites/README.md) は、LINEの公開受信・MCP Events・Discordのクラウド回収と再試行をWorker/D1で実装します。追加のhosting契約やOpenAI APIキーを使わず、既存のYour dotを接続するための構成です。2026-10-15に、MacのLINE / Discord受信サービスを停止した状態で、実LINEメッセージと実DiscordメンションからYour dotが自動返信することを確認しました。LINEは公開Webhookで直接受信し、Discordはdotのcloud browserから15秒ごとに回収します。受信タブが閉じた場合の回収・再試行用クラウドスケジュールは保存済みで、タブ停止後にも新規LINEへの自動返信を確認しましたが、通知後のdot処理に約10分かかった例があります。スケジュールの停止後復旧は検証を継続しています。試験アカウントでは毎時実行が上限でした。復旧の実測と制約は[クラウド移行記録](docs/cloud-computer.md#sitesでの移行検証2026年10月15日)を参照してください。各利用者のSites利用権限・接続・購読を個別に確認します。
+[Sites adapter](adapters/sites/README.md) は、LINEの公開受信・MCP Events・Discordのクラウド回収と再試行をWorker/D1で実装します。追加のhosting契約やOpenAI APIキーを使わず、既存のYour dotを接続するための構成です。各利用者のSites利用権限・接続・購読を個別に確認します。
+
+2026-10-15に、MacのLINE / Discord受信サービスを停止した状態で、実LINEメッセージと実DiscordメンションからYour dotが自動返信することを確認しました。LINEは公開Webhookで直接受信し、cloud受信タブを閉じた後も新規入力へのdot返信が成功しました。ただし、通知後の処理に約10分かかった例があります。
+
+Discordの15秒回収はdotのcloud browserタブが開いている間に動きます。タブ閉鎖時の回収・再試行用にクラウドスケジュールを設定し、保存した復旧taskの手動起動で、滞留したLINEを追加の返信指示なしで処理できました。試験アカウントでは毎時実行が上限です。タブ停止後の定期回収、Discord DM、物理PC電源断の検証は残っています。実測と制約は[クラウド移行記録](docs/cloud-computer.md#sitesでの移行検証2026年10月15日)を参照してください。
 
 ## 使い方を選ぶ
 
