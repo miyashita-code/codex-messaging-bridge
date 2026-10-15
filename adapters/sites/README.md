@@ -47,6 +47,10 @@ A `discord.gg` link identifies a server invitation; installing the Bot uses the 
 
 The owner-only `discord_guilds_list` tool lists the active profiles; `discord_channels_list({guild_id})` inspects the selected configured server and defaults to the primary server for older callers. Refresh the existing plugin tool catalog after deploying these additions. Update this one runtime variable through Sites and deploy a saved version to apply it. Test a fresh `@Bot` mention in each newly enabled channel through a real authorized user client. Verify a reply in that same channel, a separate conversation history in the other server, and an unchanged owner DM. Invitations, configured profiles and mocked tests alone do not establish that the new server is operational.
 
+An invocation can mention the Bot user or its own managed Bot role. Role names and message text are insufficient: the bridge checks the actual guild's current Discord role metadata for `managed: true` and this Bot's `tags.bot_id`. Other roles and `@everyone` do not invoke it. A role lookup failure retains a retryable intake failure instead of treating the message as processed.
+
+For one verified mention missed during setup, the owner may use `discord_recover_mention({channel_id, message_id})`. It rechecks the actual human source, current invocation and activation boundaries, then queues that same source for the normal cloud consumer. It sends nothing itself and never resets cursors, reply records or send fences. Existing uncertain or completed sends remain protected from a second reply.
+
 ### Verify the LINE owner before enabling intake
 
 Sites uses a server-side allowlist and does not issue the Node Gateway's pairing codes. Unknown senders are ignored, so sending a first message before `LINE_ALLOWED_USER_IDS` is configured will not produce a code.

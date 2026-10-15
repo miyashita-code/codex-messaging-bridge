@@ -9,11 +9,12 @@ function setup(t){
  const raw=new DatabaseSync(':memory:');t.after(()=>raw.close());for(const name of readdirSync(new URL('../drizzle/',import.meta.url)).filter(name=>name.endsWith('.sql')).sort())raw.exec(readFileSync(new URL('../drizzle/'+name,import.meta.url),'utf8'));
  const DB={prepare(sql){return{bind(...values){return{async first(){return raw.prepare(sql).get(...values)||null;},async run(){return{meta:{changes:Number(raw.prepare(sql).run(...values).changes)}};},async all(){return{results:raw.prepare(sql).all(...values)};}};}};}};
  const profile={guild_id:G2,label:'Additional fixture',allowed_channel_ids:[C2],poll_channel_ids:[C2],since:new Date(Date.now()-60000).toISOString()},channels=new Map([[C1,{id:C1,guild_id:G1,type:0,name:'primary'}],[C2,{id:C2,guild_id:G2,type:0,name:'additional'}],[C3,{id:C3,guild_id:G3,type:0}],[T2,{id:T2,guild_id:G2,parent_id:C2,type:11}],[T3,{id:T3,guild_id:G3,parent_id:C2,type:11}],[DM,{id:DM,type:1,recipients:[{id:AUTHOR}]}]]);
- const messages=new Map([[M1,{id:M1,channel_id:C1,author:{id:AUTHOR},content:'primary input',mentions:[{id:BOT}],timestamp:new Date().toISOString()}],[M2,{id:M2,channel_id:C2,author:{id:AUTHOR},content:'additional input',mentions:[{id:BOT}],timestamp:new Date().toISOString()}],[MDM,{id:MDM,channel_id:DM,author:{id:AUTHOR},content:'private owner input',mentions:[],timestamp:new Date().toISOString()}]]),sent=[],callbacks=[],reads=[];
+ const messages=new Map([[M1,{id:M1,channel_id:C1,author:{id:AUTHOR},content:'primary input',mentions:[{id:BOT}],timestamp:new Date().toISOString()}],[M2,{id:M2,channel_id:C2,author:{id:AUTHOR},content:'additional input',mentions:[{id:BOT}],timestamp:new Date().toISOString()}],[MDM,{id:MDM,channel_id:DM,author:{id:AUTHOR},content:'private owner input',mentions:[],timestamp:new Date().toISOString()}]]),roles=new Map(),sent=[],callbacks=[],reads=[];
  const env={DB,BRIDGE_RUNTIME:'cloud',BRIDGE_OWNER_SITE_ID:'owner',COMPANION_SHARED_KEY:Buffer.alloc(32,7).toString('base64'),DISCORD_GUILD_ID:G1,DISCORD_BOT_ID:BOT,DISCORD_BOT_TOKEN:'synthetic-token',DISCORD_OWNER_USER_ID:AUTHOR,DISCORD_ALLOWED_CHANNEL_IDS:C1,DISCORD_POLL_CHANNEL_IDS:C1+','+DM,DISCORD_CLOUD_SINCE:new Date(Date.now()-60000).toISOString(),DISCORD_ENABLE_EVENTS:'true',DISCORD_ENABLE_REPLIES:'true',DISCORD_ENABLE_THREADS:'true',DISCORD_ENABLE_HELP_DMS:'true',CLOUD_AGENT_ENABLED:'true',CLOUD_AGENT_AFTER:new Date(Date.now()-60000).toISOString(),DISCORD_GUILDS_JSON:JSON.stringify([profile])};
  env.FETCH=async(url,options={})=>{
   const path=new URL(url).pathname.replace('/api/v10','');reads.push(path);
   if(/^\/guilds\/\d+\/channels$/.test(path)){const guild=path.split('/')[2];return Response.json([...channels.values()].filter(ch=>ch.guild_id===guild&&ch.type===0));}
+  if(/^\/guilds\/\d+\/roles$/.test(path))return Response.json(roles.get(path.split('/')[2])||[]);
   if(path.endsWith('/threads/active'))return Response.json({threads:[]});
   const meta=/^\/channels\/(\d+)$/.exec(path);if(meta)return Response.json(channels.get(meta[1])||{}, {status:channels.has(meta[1])?200:404});
   const route=/^\/channels\/(\d+)\/messages(?:\/(\d+))?$/.exec(path);
@@ -28,7 +29,7 @@ function setup(t){
  const tool=(name,args={})=>callTool(name,args,req,env);
  const subscribe=(guild=G2,channel=C2,name='discord.message.created')=>events.subscribed('events/subscribe',{name,arguments:{guild_id:guild,channel_ids:[channel]},delivery:{mode:'webhook',url:'https://chatgpt.com/mcp-events/fixture-'+guild,secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}},req,env);
  const input=(guild=G2,channel=C2,message=M2)=>({guild_id:guild,channel_id:channel,message_id:message});
- return {raw,env,profile,channels,messages,sent,callbacks,reads,req,tool,subscribe,input};
+ return {raw,env,profile,channels,messages,roles,sent,callbacks,reads,req,tool,subscribe,input};
 }
 
 test('explicit additional guild reads, inbox records, catalog selection and URLs use the actual source guild',async t=>{
@@ -148,4 +149,48 @@ test('attachment source policy withdrawal after download produces only a fixed e
  s.env.ATTACHMENT_FETCH=async()=>{s.env.DISCORD_GUILDS_JSON='[]';return new Response(body);};
  const response=await worker.fetch(new Request('https://site.example/mcp',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':'owner'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'discord_text_attachment_read',arguments:{channel_id:C2,message_id:M2,attachment_id:file}}})}),s.env);
  const payload=await response.json();assert.equal(payload.result.isError,true);assert.deepEqual(JSON.parse(payload.result.content[0].text),{error:'DISCORD_ATTACHMENT_SOURCE_NOT_ALLOWED'});assert.equal(JSON.stringify(payload).includes(body),false);
+});
+
+test('verified managed Bot role invokes the same event, source projection, claim and fixed reply path',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[role];m.content='<@&'+role+'> read the notes';s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);
+ await events.subscribed('events/subscribe',{name:'discord.message.created',arguments:{guild_id:G2,channel_ids:[C2],mentions_only:true},delivery:{mode:'webhook',url:'https://chatgpt.com/mcp-events/role-fixture',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}},s.req,s.env);
+ await events.enqueue(s.env,s.input());const data=JSON.parse(s.raw.prepare('SELECT data_json FROM event_records').get().data_json);assert.equal(data.mentions_bot,true);assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_outbox').get().n,1);
+ const projection=await s.tool('discord_message_read',{channel_id:C2,message_id:M2});assert.equal(projection.mentions_bot,true);assert.equal(projection.mention_kind,'bot_role');assert.equal((await s.tool('discord_history_read',{channel_id:C2})).messages[0].mention_kind,'bot_role');
+ const claim=await s.tool('bridge_wait_for_message',{wait_ms:0});assert.equal(claim.status,'message');assert.equal((await s.tool('bridge_reply_to_claim',{lease_id:claim.lease_id,claim_id:claim.claim_id,content:'notes checked'})).status,'completed');assert.equal(s.sent.length,1);assert.equal(s.sent[0].channel,C2);assert.equal(s.sent[0].body.message_reference.message_id,M2);assert.deepEqual(s.sent[0].body.allowed_mentions,{parse:[],replied_user:false});
+});
+
+test('removing the managed role invalidates queued mention-only callbacks and an existing claim',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[role];s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);
+ await events.subscribed('events/subscribe',{name:'discord.message.created',arguments:{guild_id:G2,channel_ids:[C2],mentions_only:true},delivery:{mode:'webhook',url:'https://chatgpt.com/mcp-events/role-revoke',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}},s.req,s.env);await events.enqueue(s.env,s.input());const claim=await s.tool('bridge_wait_for_message',{wait_ms:0});assert.equal(claim.status,'message');
+ s.roles.set(G2,[]);assert.equal((await events.drain(s.env)).delivered,0);assert.equal(s.raw.prepare('SELECT status FROM event_outbox').get().status,'cancelled');assert.equal((await s.tool('bridge_reply_to_claim',{lease_id:claim.lease_id,claim_id:claim.claim_id,content:'blocked'})).status,'source_unavailable');assert.equal(s.sent.length,0);assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM actions').get().n,0);
+});
+
+test('unfiltered callbacks project the current invocation result after a role is removed',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[role];s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);await s.subscribe();await events.enqueue(s.env,s.input());assert.equal(JSON.parse(s.raw.prepare('SELECT data_json FROM event_records').get().data_json).mentions_bot,true);
+ s.roles.set(G2,[]);assert.equal((await events.drain(s.env)).delivered,1);assert.equal(s.callbacks.length,1);assert.equal(s.callbacks[0].data.mentions_bot,false);assert.equal(s.sent.length,0);
+});
+
+test('owner recovery upgrades one freshly verified role mention without touching cursor, actions or fences',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[];await events.enqueue(s.env,s.input());const prior=s.raw.prepare('SELECT occurred_at,created_at FROM event_records').get();m.mention_roles=[role];s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);
+ s.raw.prepare('INSERT INTO bridge_runtime(key,value,updated_at) VALUES(?,?,?)').run('cloud_cursor:'+G2+':'+C2,'600000000000000001',Date.now());s.raw.prepare("INSERT INTO actions(action_key,kind,source_id,status,created_at) VALUES(?,?,?,'unknown',?)").run('reply:'+M2,'reply',M2,Date.now());
+ for(let i=0;i<2;i++)assert.deepEqual(await s.tool('discord_recover_mention',{channel_id:C2,message_id:M2}),{event_id:'discord_message_'+M2});const row=s.raw.prepare('SELECT * FROM event_records').get();assert.equal(JSON.parse(row.data_json).mentions_bot,true);assert.equal(row.occurred_at,prior.occurred_at);assert.equal(row.created_at,prior.created_at);assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+G2+':'+C2).value,'600000000000000001');assert.equal(s.raw.prepare('SELECT status FROM actions').get().status,'unknown');assert.equal((await s.tool('bridge_wait_for_message',{wait_ms:0})).status,'empty');assert.equal(s.sent.length,0);
+});
+
+test('a recovered false event becomes a single mention-only notification and a claim without replaying history',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[role];
+ await events.subscribed('events/subscribe',{name:'discord.message.created',arguments:{guild_id:G2,channel_ids:[C2],mentions_only:true},delivery:{mode:'webhook',url:'https://chatgpt.com/mcp-events/recovered-role',secret:'whsec_'+Buffer.alloc(32,1).toString('base64')}},s.req,s.env);await events.enqueue(s.env,s.input());assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_outbox').get().n,0);
+ s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);for(let i=0;i<2;i++)await s.tool('discord_recover_mention',{channel_id:C2,message_id:M2});assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_records').get().n,1);assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_outbox').get().n,1);
+ const claim=await s.tool('bridge_wait_for_message',{wait_ms:0});assert.equal(claim.status,'message');assert.equal(claim.source_id,M2);assert.equal(s.sent.length,0);
+});
+
+test('a failed role catalog lookup never creates a false event record that could hide an invocation',async t=>{
+ const s=setup(t),m=s.messages.get(M2);m.mentions=[];m.mention_roles=['700000000000000001'];const fetch=s.env.FETCH;s.env.FETCH=async(url,options)=>new URL(url).pathname.endsWith('/roles')?Response.json({retry_after:15},{status:429}):fetch(url,options);
+ await assert.rejects(events.enqueue(s.env,s.input()),error=>error.code==='DISCORD_RATE_LIMITED'&&error.retryAfterMs===15000);assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_records').get().n,0);
+});
+
+test('recovery rejects non-Bot roles, old sources, foreign owners and immutable event substitution',async t=>{
+ const s=setup(t),role='700000000000000001',m=s.messages.get(M2);m.mentions=[];m.mention_roles=[role];s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:'300000000000000009'}}]);await assert.rejects(s.tool('discord_recover_mention',{channel_id:C2,message_id:M2}),e=>e.code==='EXPLICIT_MENTION_REQUIRED');
+ s.roles.set(G2,[{id:role,managed:true,tags:{bot_id:BOT}}]);m.timestamp=new Date(Date.now()-120000).toISOString();await assert.rejects(s.tool('discord_recover_mention',{channel_id:C2,message_id:M2}),e=>e.code==='SOURCE_OUTSIDE_ACTIVE_WINDOW');m.timestamp=new Date().toISOString();
+ await assert.rejects(callTool('discord_recover_mention',{channel_id:C2,message_id:M2},new Request('https://site.example/mcp',{headers:{'oai-authenticated-user-id':'other'}}),s.env),e=>e.code==='OWNER_ONLY');
+ await events.enqueue(s.env,s.input());const row=s.raw.prepare('SELECT data_json FROM event_records').get(),data={...JSON.parse(row.data_json),author_id:'300000000000000009',mentions_bot:false};s.raw.prepare('UPDATE event_records SET data_json=?').run(JSON.stringify(data));await assert.rejects(s.tool('discord_recover_mention',{channel_id:C2,message_id:M2}),e=>e.message==='SOURCE_MISMATCH');assert.equal(s.raw.prepare('SELECT data_json FROM event_records').get().data_json,JSON.stringify(data));assert.equal(s.sent.length,0);
 });

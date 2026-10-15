@@ -92,8 +92,8 @@ test('redirects and HTTP failures never follow or read an untrusted response bod
  const s=setup();let reads=0;
  const body={getReader(){reads++;throw Error('synthetic-private-response');},cancel(){}};
  await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:false,status:302,headers:new Headers({location:'https://evil.test'}),body})}),code('REDIRECT_DENIED'));
- await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:false,status:403,headers:new Headers(),body})}),code('UNAVAILABLE'));
- await assert.rejects(s.read({},{fetchAttachment:async()=>{throw Error('synthetic-bot-secret https://private.test');}}),error=>code('UNAVAILABLE')(error)&&!error.message.includes('synthetic-bot-secret'));
+ await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:false,status:403,headers:new Headers(),body})}),code('HTTP_403'));
+ await assert.rejects(s.read({},{fetchAttachment:async()=>{throw Error('synthetic-bot-secret https://private.test');}}),error=>code('FETCH_FAILED')(error)&&!error.message.includes('synthetic-bot-secret'));
  assert.equal(reads,0);
 });
 test('a stalled attachment fetch is aborted within the single bounded deadline',async()=>{
@@ -120,4 +120,43 @@ test('attachment removal or actual guild change during fetch cannot return stale
 test('refreshing only the actual signed query leaves the same attachment identity intact',async()=>{
  const s=setup(),result=await s.read({},{fetchAttachment:async(url,options)=>{s.state.source.m.attachments[0].url=s.state.source.m.attachments[0].url.replace('synthetic-signed-value','refreshed-signature');return s.fetchAttachment(url,options);}});
  assert.equal(result.content,'A😀あB\r\n');assert.equal(JSON.stringify(result).includes('signature'),false);
+});
+
+test('the global host fetch fallback retains its receiver instead of invoking an unbound native function',async t=>{
+ const s=setup();let calls=0;t.mock.method(globalThis,'fetch',function(_url,options){assert.equal(this,globalThis);assert.equal('headers' in options,false);calls++;return Promise.resolve(new Response(s.state.body));});
+ const result=await readDiscordAttachment(s.env,args,{readSource:s.readSource});assert.equal(result.content,'A😀あB\r\n');assert.equal(calls,1);assert.equal(s.state.calls.length,2);
+});
+
+test('environment fetch methods retain their receiver and attachment-specific methods take precedence',async()=>{
+ for(const property of ['FETCH','ATTACHMENT_FETCH']){
+  const s=setup();let calls=0;s.env[property]=function(_url,options){assert.equal(this,s.env);assert.equal('headers' in options,false);calls++;return Promise.resolve(new Response(s.state.body));};
+  if(property==='ATTACHMENT_FETCH')s.env.FETCH=()=>{throw Error('must not select lower-precedence fetch');};
+  const result=await readDiscordAttachment(s.env,args,{readSource:s.readSource});assert.equal(result.total_bytes,s.state.body.byteLength);assert.equal(calls,1);
+ }
+ const s=setup();s.env.ATTACHMENT_FETCH=()=>{throw Error('explicit injected dependency has precedence');};assert.equal((await s.read()).content,'A😀あB\r\n');
+});
+
+test('fixed transport codes separate receiver, policy and network failures without exposing host error details',async()=>{
+ const secret='synthetic-secret https://cdn.discordapp.com/private?hm=never-return';
+ const cases=[
+  [new TypeError('Illegal invocation '+secret),'FETCH_BINDING_ERROR'],
+  [Object.assign(new Error(secret),{code:'ERR_INVALID_THIS'}),'FETCH_BINDING_ERROR'],
+  [new DOMException(secret,'SecurityError'),'FETCH_POLICY_DENIED'],
+  [Object.assign(new Error(secret),{code:'ERR_NETWORK_ACCESS_DENIED'}),'FETCH_POLICY_DENIED'],
+  [new DOMException(secret,'AbortError'),'FETCH_ABORTED'],
+  [new TypeError(secret),'FETCH_TYPE_ERROR'],[new Error(secret),'FETCH_FAILED'],
+ ];
+ for(const [error,expected] of cases){const s=setup();await assert.rejects(s.read({},{fetchAttachment:async()=>{throw error;}}),failure=>code(expected)(failure)&&failure.message==='DISCORD_ATTACHMENT_'+expected&&!failure.message.includes(secret));assert.equal(s.state.calls.length,1);}
+});
+
+test('HTTP diagnostics expose only the bounded status code and never inspect denied response bodies',async()=>{
+ for(const status of [401,403,404,429,500,503]){
+  const s=setup();let reads=0;await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:false,status,headers:new Headers(),body:{getReader(){reads++;throw Error('private denied body');},cancel(){}}})}),code('HTTP_'+status));assert.equal(reads,0);
+ }
+ const s=setup();await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:false,status:0,headers:new Headers()})}),code('RESPONSE_INVALID'));
+});
+
+test('a body transport failure and an unavailable configured fetch remain distinct from CDN HTTP rejection',async()=>{
+ const s=setup();await assert.rejects(s.read({},{fetchAttachment:async()=>({ok:true,status:200,headers:new Headers(),body:{getReader(){return{read:async()=>{throw Error('private stream https://signed.test');},cancel(){}};}}})}),code('BODY_READ_FAILED'));
+ const invalid=setup();invalid.env.ATTACHMENT_FETCH='not-a-function';await assert.rejects(readDiscordAttachment(invalid.env,args,{readSource:invalid.readSource}),code('FETCH_UNAVAILABLE'));assert.equal(invalid.state.calls.length,1);
 });

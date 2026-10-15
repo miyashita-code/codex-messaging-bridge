@@ -50,16 +50,36 @@ async function authorized(env,args,readSource){
  return attachmentFrom(source,args);
 }
 function cancel(value){try{const result=value?.cancel();result?.catch?.(()=>undefined);}catch{}}
+function attachmentFetcher(env,injected){
+ // Host fetch implementations may require their owning receiver. Taking a
+ // method into a bare local variable can fail before any HTTP request is sent.
+ if(injected!==undefined){if(typeof injected!=='function')fail('FETCH_UNAVAILABLE',503);return (...args)=>injected(...args);}
+ if(env.ATTACHMENT_FETCH!==undefined){if(typeof env.ATTACHMENT_FETCH!=='function')fail('FETCH_UNAVAILABLE',503);return (...args)=>env.ATTACHMENT_FETCH(...args);}
+ if(env.FETCH!==undefined){if(typeof env.FETCH!=='function')fail('FETCH_UNAVAILABLE',503);return (...args)=>env.FETCH(...args);}
+ if(typeof globalThis.fetch!=='function')fail('FETCH_UNAVAILABLE',503);
+ return (...args)=>globalThis.fetch(...args);
+}
+function transportFailure(error){
+ const name=error?.name,code=error?.code,message=typeof error?.message==='string'?error.message.slice(0,512):'';
+ // Only fixed classifications escape; raw host exceptions can contain the
+ // signed CDN URL, credentials or unrelated runtime implementation details.
+ if(code==='ERR_INVALID_THIS'||/illegal invocation|incorrect (?:this|receiver)/i.test(message))fail('FETCH_BINDING_ERROR',502);
+ if(['SecurityError','NotAllowedError'].includes(name)||['ERR_ACCESS_DENIED','ERR_NETWORK_ACCESS_DENIED','NETWORK_ACCESS_DENIED'].includes(code))fail('FETCH_POLICY_DENIED',502);
+ if(name==='AbortError')fail('FETCH_ABORTED',502);
+ fail(name==='TypeError'?'FETCH_TYPE_ERROR':'FETCH_FAILED',502);
+}
 async function download(env,attachment,{fetchAttachment,timeoutMs}){
- const fetcher=fetchAttachment||env.ATTACHMENT_FETCH||env.FETCH||fetch;
- if(typeof fetcher!=='function'||!Number.isSafeInteger(timeoutMs)||timeoutMs<1)fail('UNAVAILABLE',503);
- const controller=new AbortController();let timer,reader,response;
+ const fetcher=attachmentFetcher(env,fetchAttachment);
+ if(!Number.isSafeInteger(timeoutMs)||timeoutMs<1)fail('FETCH_UNAVAILABLE',503);
+ const controller=new AbortController();let timer,reader,response,phase='fetch';
  const timedOut=new Promise((_,reject)=>{timer=setTimeout(()=>{reject(new DiscordAttachmentError('DISCORD_ATTACHMENT_TIMEOUT',504));controller.abort();cancel(reader);},Math.min(timeoutMs,TIMEOUT_MS));});
  const bounded=operation=>Promise.race([Promise.resolve().then(operation),timedOut]);
  try{
   response=await bounded(()=>fetcher(attachment.url,{method:'GET',redirect:'error',credentials:'omit',referrerPolicy:'no-referrer',signal:controller.signal}));
-  if(!response||response.redirected||response.status>=300&&response.status<400)fail('REDIRECT_DENIED',502);
-  if(!response.ok)fail('UNAVAILABLE',502);
+  if(!response||!Number.isInteger(response.status)||response.status<100||response.status>599||typeof response.ok!=='boolean')fail('RESPONSE_INVALID',502);
+  if(response.redirected||response.status>=300&&response.status<400)fail('REDIRECT_DENIED',502);
+  if(!response.ok)fail('HTTP_'+response.status,502);
+  phase='body';
   const length=response.headers?.get('content-length');
   if(length!==null&&length!==undefined&&(!/^\d+$/.test(length)||Number(length)>MAX_BYTES))fail('TOO_LARGE',413);
   if(!response.body){if(attachment.size===0)return new Uint8Array();fail('BODY_UNAVAILABLE',502);}
@@ -73,7 +93,7 @@ async function download(env,attachment,{fetchAttachment,timeoutMs}){
   }
   if(size!==attachment.size)fail('SIZE_MISMATCH',502);
   const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.byteLength;}return bytes;
- }catch(error){if(error instanceof DiscordAttachmentError)throw error;fail('UNAVAILABLE',502);}
+ }catch(error){if(error instanceof DiscordAttachmentError)throw error;if(phase==='body')fail('BODY_READ_FAILED',502);transportFailure(error);}
  finally{clearTimeout(timer);controller.abort();if(reader)cancel(reader);else cancel(response?.body);}
 }
 export async function readDiscordAttachment(env,args,{readSource,fetchAttachment,timeoutMs=TIMEOUT_MS}={}){

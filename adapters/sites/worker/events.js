@@ -1,5 +1,6 @@
 // Official MCP Events webhook delivery. No alternate model or private session API.
 import {discordGuildProfile,discordGuildEnv,discordPrimaryGuildId,discordChannelActivation} from './discord-guilds.js';
+import {discordDirectInvocation} from './discord-invocation.js';
 const VERSION='2026-07-28';
 const EVENT_NAME='discord.message.created';
 const DM_EVENT_NAME='discord.dm.message.created';
@@ -158,15 +159,24 @@ export function eventService(deps){
   if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!==expected)invalid('INVALID_INGRESS_EVENT');
   env=eventGuildEnv(env,input.guild_id,isDm?DM_EVENT_NAME:EVENT_NAME);
   let verified;try{verified=await (isDm?dmSource:source)(env,input);}catch(e){if(isDm&&['DM_CHANNEL_NOT_ALLOWED','DM_SOURCE_TOO_OLD'].includes(e.code))return null;throw e;}
-  const {m}=verified;if(isDm&&await honorDmStop(env,m))return null;
+  const {m,invocation}=verified;if(isDm&&await honorDmStop(env,m))return null;
   const happened=Date.parse(m.timestamp);if(!Number.isFinite(happened)||happened>Date.now()+60000)invalid('INVALID_EVENT_TIME');
   if(isDm){const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',m.author.id);if(pref?.blocked&&happened<=pref.updated_at)return null;}
   const name=isDm?DM_EVENT_NAME:EVENT_NAME,eventId=`discord_${isDm?'dm_':''}message_${m.id}`;
-  const data={guild_id:env.DISCORD_GUILD_ID,channel_id:m.channel_id,message_id:m.id,author_id:m.author.id,mentions_bot:!!m.mentions?.some(u=>u.id===env.DISCORD_BOT_ID),url:`https://discord.com/channels/${isDm?'@me':env.DISCORD_GUILD_ID}/${m.channel_id}/${m.id}`};
+  const data={guild_id:env.DISCORD_GUILD_ID,channel_id:m.channel_id,message_id:m.id,author_id:m.author.id,mentions_bot:(invocation||discordDirectInvocation(env,m)).mentions_bot,url:`https://discord.com/channels/${isDm?'@me':env.DISCORD_GUILD_ID}/${m.channel_id}/${m.id}`};
   const occurredAt=new Date(happened).toISOString();
   await dbRun(env,'INSERT OR IGNORE INTO event_records (id, data_json, occurred_at, created_at) VALUES (?, ?, ?, ?)',eventId,JSON.stringify(data),occurredAt,Date.now());
-  const saved=await dbFirst(env,'SELECT data_json, occurred_at FROM event_records WHERE id = ?',eventId);
-  const savedData=JSON.parse(saved.data_json),occurredTime=Date.parse(saved.occurred_at);
+  let saved,savedData;
+  for(let attempt=0;attempt<8;attempt++){
+   saved=await dbFirst(env,'SELECT data_json, occurred_at FROM event_records WHERE id = ?',eventId);
+   try{savedData=JSON.parse(saved.data_json);}catch{invalid('SOURCE_MISMATCH');}
+   if(!savedData||Object.keys(savedData).sort().join(',')!==Object.keys(data).sort().join(',')||['guild_id','channel_id','message_id','author_id','url'].some(key=>savedData[key]!==data[key])||saved.occurred_at!==occurredAt||typeof savedData.mentions_bot!=='boolean')invalid('SOURCE_MISMATCH');
+   if(savedData.mentions_bot===data.mentions_bot)break;
+   const updated=await dbRun(env,'UPDATE event_records SET data_json=? WHERE id=? AND data_json=? AND occurred_at=?',JSON.stringify(data),eventId,saved.data_json,saved.occurred_at);
+   if(updated.meta?.changes){savedData=data;break;}
+   if(attempt===7)invalid('SOURCE_CHANGED_RETRY_REQUIRED');
+  }
+  const occurredTime=Date.parse(saved.occurred_at);
   const subs=await all(env,'SELECT id, principal, arguments_json, started_at FROM event_subscriptions WHERE active = 1 AND expires_at > ? AND name = ?',Date.now(),name);
   for(const sub of subs)if(sub.principal===env.BRIDGE_OWNER_SITE_ID&&occurredTime>=sub.started_at&&matches(JSON.parse(sub.arguments_json),savedData))await dbRun(env,'INSERT OR IGNORE INTO event_outbox (id, subscription_id, event_id, status, attempts, next_attempt_at, lease_until, updated_at) VALUES (?, ?, ?, ?, 0, ?, 0, ?)',`${sub.id}:${eventId}`,sub.id,eventId,'pending',Date.now(),Date.now());
   return eventId;
@@ -194,16 +204,17 @@ export function eventService(deps){
    try{
     checkEvents(env,item.name);
     const data=JSON.parse(item.data_json),sourceEnv=item.name===LINE_EVENT_NAME?env:eventGuildEnv(env,data.guild_id,item.name);
-    const {ch,m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(sourceEnv,{channel_id:data.channel_id,message_id:data.message_id});
+    const {ch,m,invocation}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(sourceEnv,{channel_id:data.channel_id,message_id:data.message_id});
+    const currentData=item.name===EVENT_NAME?{...data,mentions_bot:invocation.mentions_bot}:data;
     if(item.name===EVENT_NAME&&data.guild_id!==discordPrimaryGuildId(env)&&Date.parse(m.timestamp)<(await discordChannelActivation(env,data.guild_id,ch.id,{...([10,11].includes(ch.type)&&ch.parent_id?{parent_id:ch.parent_id}:{})})).since_ms)invalid('SOURCE_MISMATCH');
     if(item.name!==LINE_EVENT_NAME&&m.author.id!==data.author_id)invalid('SOURCE_MISMATCH');
     if(item.name===DM_EVENT_NAME&&await honorDmStop(env,m)){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
     if(item.name===DM_EVENT_NAME){const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',data.author_id);if(pref?.blocked&&Date.parse(item.occurred_at)<=pref.updated_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}}
     const current=await dbFirst(env,'SELECT * FROM event_subscriptions WHERE id = ?',item.subscription_id);
     if(!current?.active||current.expires_at<=Date.now()||current.principal!==env.BRIDGE_OWNER_SITE_ID||Date.parse(item.occurred_at)<current.started_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
-    if(item.name!==LINE_EVENT_NAME){const args=JSON.parse(current.arguments_json);eventArguments(args,env,item.name);if(!matches(args,data))invalid('SOURCE_MISMATCH');}
+    if(item.name!==LINE_EVENT_NAME){const args=JSON.parse(current.arguments_json);eventArguments(args,env,item.name);if(!matches(args,currentData))invalid('SOURCE_MISMATCH');}
     const delivery=await unseal(env,current.delivery_sealed,item.subscription_id);
-    const response=await signedDelivery(env,{id:item.subscription_id},delivery,{eventId:item.event_id,name:item.name,timestamp:item.occurred_at,data,cursor:null});
+    const response=await signedDelivery(env,{id:item.subscription_id},delivery,{eventId:item.event_id,name:item.name,timestamp:item.occurred_at,data:currentData,cursor:null});
     if(response.status>=200&&response.status<300){status='delivered';delivered++;await dbRun(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('event_callback_accepted','ok',?) ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",Date.now());}
     else if(![408,425,429].includes(response.status)&&response.status<500){status='dead';if(response.status===410)await dbRun(env,'UPDATE event_subscriptions SET active = 0, operation_id = ?, updated_at = ? WHERE id = ? AND operation_id = ?',crypto.randomUUID(),Date.now(),current.id,current.operation_id);}
    }catch(e){if(e instanceof EventError&&e.message==='CALLBACK_TRANSPORT_REDIRECT_DENIED')status='dead';else if(['EVENTS_DISABLED','DISCORD_403','DISCORD_404','GUILD_NOT_ALLOWED','CHANNEL_NOT_ALLOWED','BOT_LOOP_BLOCKED','SOURCE_MISMATCH','SUBSCRIPTION_UNAVAILABLE','DM_CHANNEL_NOT_ALLOWED','DM_RECIPIENT_MISMATCH','DM_SOURCE_MISMATCH','DM_SOURCE_TOO_OLD'].includes(e.code||e.message))status='cancelled';}
