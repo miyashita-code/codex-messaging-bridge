@@ -129,6 +129,29 @@ test('a stalled adapter cannot extend a bounded long poll or claim after its dea
 test('persisted LINE input is claimed before a slow unrelated Discord collector',async()=>{
  const s=setup();s.adapters.collectDiscord=async()=>{throw Error('must not wait for Discord');};const result=await wait(s);assert.equal(result.status,'message');assert.equal(result.source_key,SOURCE);
 });
+test('a lifetime-owned eager collection starts even when LINE is already ready without delaying its claim',async()=>{
+ const s=setup();let count=0,release,finished=false;s.adapters.collection_background_supported=true;
+ s.adapters.collectDiscord=async()=>{count++;await new Promise(resolve=>{release=resolve;});finished=true;};
+ try{const start=Date.now(),result=await wait(s);assert.equal(result.status,'message');assert.equal(result.source_key,SOURCE);assert.equal(count,1);assert.equal(finished,false);assert.ok(Date.now()-start<500);}
+ finally{release?.();}
+});
+test('only the first successful reply consumer starts eager intake; cached or concurrent duplicates do not',async()=>{
+ const s=setup();let count=0;s.adapters.collection_background_supported=true;s.adapters.collectDiscord=async()=>{count++;};
+ const claim=await wait(s);assert.equal(count,1);
+ const results=await Promise.all([reply(s,claim),reply(s,claim)]);assert.ok(results.some(r=>r.status==='completed'));assert.equal(s.sends.length,1);assert.equal(count,2);
+ const duplicate=await reply(s,claim);assert.equal(duplicate.duplicate,true);assert.equal(count,2);
+});
+test('invalid consumers and a revoked reply source cannot trigger additional eager intake',async()=>{
+ const s=setup();let count=0;s.adapters.collection_background_supported=true;s.adapters.collectDiscord=async()=>{count++;};
+ const claim=await wait(s);assert.equal(count,1);
+ await assert.rejects(waitForMessage(s.env,'other',{wait_ms:0},s.adapters),e=>e.code==='CLOUD_AGENT_OWNER_ONLY');assert.equal((await wait(s)).status,'busy');
+ assert.equal((await reply(s,{...claim,lease_id:'another-lease-token-fixture'})).status,'lease_lost');
+ assert.equal((await reply(s,{...claim,claim_id:'another-claim-token-fixture'})).status,'claim_lost');
+ s.setApproved(false);assert.equal((await reply(s,claim)).status,'source_unavailable');assert.equal(count,1);assert.equal(s.sends.length,0);
+});
+test('without a supported background lifetime, ready LINE and its reply retain the previous no-collection path',async()=>{
+ const s=setup();const claim=await wait(s);assert.equal(claim.status,'message');assert.equal(s.collected,0);assert.equal((await reply(s,claim)).status,'completed');assert.equal(s.collected,0);
+});
 test('LINE arriving during a lifetime-owned Discord collection is claimed within the next poll without a duplicate collector',async()=>{
  const s=setup(),message=s.messages.pop();let release,started;let count=0;
  const ready=new Promise(resolve=>{started=resolve;});s.adapters.collection_background_supported=true;s.adapters.collectDiscord=async()=>{count++;started();await new Promise(resolve=>{release=resolve;});};

@@ -97,6 +97,11 @@ async function until(deadline,operation){
 }
 const idle=(lease,status='empty',extra={})=>({status,...(lease?{lease_id:lease}:{}),...extra});
 const delivered=(current,message)=>({status:'message',lease_id:current.state.lease_id,claim_id:current.state.claim.id,...message});
+function startBackgroundCollection(env,adapters,onDone=()=>{},onError=()=>{}){
+ // The adapter registers the underlying task with this request's waitUntil.
+ // This is a single bounded collection, not a timer or an independent worker.
+ return Promise.resolve().then(()=>adapters.collectDiscord(env)).then(onDone,onError);
+}
 export async function waitForMessage(env,owner,args,adapters){
  enabled(env,owner);argsOnly(args,['lease_id','wait_ms']);
  if(args.lease_id!==undefined)checkToken(args.lease_id);
@@ -119,6 +124,10 @@ export async function waitForMessage(env,owner,args,adapters){
   enabled(env,owner);current=await stateFor(env,key);
   if(current.state.lease_id!==lease||current.state.lease_until<=Date.now())return idle(null,'lease_lost');
   if(current.state.claim?.state==='sending')return idle(lease,'reply_pending',{claim_id:current.state.claim.id,requires_review:true});
+  if(adapters.collection_background_supported===true&&!collected){
+   collected=true;
+   collecting=startBackgroundCollection(env,adapters,()=>{collecting=null;},error=>{collecting=null;collectionError=error;});
+  }
   const exact=current.state.claim;
   const found=await until(deadline,()=>adapters.readCandidate(env,{after_ms:current.state.after_ms,deadline_ms:deadline,exclude_source_keys:excluded,...(exact?{source_key:exact.source_key}:{})}));
   if(found===TIMEOUT)return idle(lease);
@@ -152,7 +161,7 @@ export async function waitForMessage(env,owner,args,adapters){
   if(!collected){
    collected=true;
    if(adapters.collection_background_supported===true){
-    collecting=Promise.resolve().then(()=>adapters.collectDiscord(env)).then(()=>{collecting=null;},error=>{collecting=null;collectionError=error;});
+    collecting=startBackgroundCollection(env,adapters,()=>{collecting=null;},error=>{collecting=null;collectionError=error;});
    }else{
     // Direct calls without a supported execution context must own the entire
     // collection lifetime rather than abandoning writes after their response.
@@ -198,7 +207,10 @@ export async function replyToClaim(env,owner,args,adapters){
   try{
    enabled(env,owner);const beforeSend=await stateFor(env,key);
    if(!validLease(beforeSend.state)||beforeSend.state.claim?.id!==claim.id||beforeSend.state.claim.state!=='sending')status='cancelled';
-   else{const result=await adapters.sendReply(env,fresh,args.content);status=TERMINAL.has(result?.status)?result.status:'unknown';duplicate=result?.duplicate===true;}
+   else{
+    if(adapters.collection_background_supported===true&&typeof adapters.collectDiscord==='function')startBackgroundCollection(env,adapters);
+    const result=await adapters.sendReply(env,fresh,args.content);status=TERMINAL.has(result?.status)?result.status:'unknown';duplicate=result?.duplicate===true;
+   }
   }
   catch{status='unknown';}
   const terminal=JSON.stringify({source_key:claim.source_key,claim_id:claim.id,status,content_hash:hash});

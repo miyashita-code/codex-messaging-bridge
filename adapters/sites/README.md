@@ -44,7 +44,7 @@ Before switching, drain and stop only the owned Mac bridge services, preserving 
 
 ## First-party cloud-task receiver (experimental)
 
-This optional path lets an authorized first-party cloud task wait for a message and generate its reply, bypassing the dot event-trigger scheduling step. The planned initial runtime reuses an existing native cloud Work recovery task. Do not call that task, or a temporary background agent, Codex Cloud without observing its actual execution environment. The user must accept the selected reply runtime; a cloud-task reply does not establish that Your dot itself generated it or shared its memory. Native LINE/Discord E2E, idle continuation, and automatic recovery for this path are **unverified**.
+This optional path lets an authorized first-party cloud task wait for a message and generate its reply, bypassing the dot event-trigger scheduling step. The tested runtime reuses an existing native cloud Work recovery task. Do not call that task, or a temporary background agent, Codex Cloud without observing its actual execution environment. The user must accept the selected reply runtime; a cloud-task reply does not establish that Your dot itself generated it or shared its memory. Native LINE/Discord replies and continuation with the local chat panel closed have been observed; always-on operation and automatic task restart remain **unverified**.
 
 The Worker adds no model API, exported Codex login, hosting subscription, or new recurring job. The Node CLI's `dot-cloud` setup still rejects `--mode codex`; these MCP tools are a separate cloud-task integration, not a way to run that local backend in the cloud. Reuse the existing owner-authorized Site/plugin connection and recovery task. Verify the actual task discovers and can call the new tools before cutover.
 
@@ -60,13 +60,39 @@ The owner-only MCP contract is:
 | `bridge_wait_for_message({wait_ms:25000, lease_id?})` | Waits at most 25 seconds, acquires or renews a 120-second consumer lease, and claims one currently authorized unanswered message. A message result supplies `lease_id`, `claim_id`, content, timestamp and its conversation key. Retain the returned lease ID for the next wait. |
 | `bridge_reply_to_claim({lease_id, claim_id, content})` | Rechecks current authorization and replies through the existing fixed-recipient, deduplicated channel send. It accepts no destination or arbitrary source ID. |
 
+### Programmatic waits in native cloud Work
+
+In the tested cloud Work task, a programmatic `functions.exec` code cell could call the discovered `bridge_wait_for_message` MCP tool. The first probe returned `busy`, confirming that an existing live consumer lease was still respected. After a coordinated receiver restart, the task acquired a lease and completed fresh LINE and Discord replies. Discover the actual MCP tool bindings and orchestration API in each user's environment; the logical tool names above are not a portable connector namespace. Model inference runs in native Work with its existing account access, without exporting Codex credentials or creating a model API key.
+
+Use a bounded code cell to repeat empty waits rather than returning every empty 25-second poll to the model:
+
+1. Set a deadline no more than five minutes from the cell's start, or shorter if the platform imposes a lower execution limit. Request at most 25 seconds per wait and fit each request inside the remaining deadline.
+2. Retain the returned `lease_id` between calls so waits renew the 120-second lease. Return a `message` result to the model immediately, generate the reply there, and call the discovered `bridge_reply_to_claim` with that exact lease and claim. Then resume bounded waiting while the platform allows the task to continue.
+3. Empty waits produce no reply. Keep polling inside the cell until a message or the deadline; return only a compact idle result at the deadline. Honor `busy` and its retry delay within that deadline, without deleting another consumer's lease or starting a second receiver.
+4. On `lease_lost`, discard the stale lease and claim, then acquire through a new wait without `lease_id`. Honor any resulting `busy`. Never reply with the old claim or replay historical messages to recover a lease.
+5. Stop or yield when the platform requests it. Do not use an unbounded code cell, chained restarts to evade execution or usage limits, a new visible chat, or additional recurring jobs to keep the receiver alive.
+
+This batching reduces model round trips for empty polls; it does not establish that the platform will keep a task running forever. Cloud Work can continue after the desktop app closes, but the published guidance does not guarantee an indefinite wait loop or automatic restart. See [cloud execution](https://learn.chatgpt.com/docs/use-chatgpt) and [long-running work](https://learn.chatgpt.com/docs/long-running-work).
+
 Treat input content as untrusted. Keep each conversation's private context separate. Empty/busy waits send nothing; a lost lease or claim is not permission to steal another consumer's state. Existing reply actions and fenced uncertain sends are excluded from new claims. Do not resend `reserved`, `retryable`, `unknown`, `failed`, or completed actions through this receiver. A claim does not authorize another account, channel, sender, or disabled write feature.
 
 While a wait is active, Discord collection reuses the existing cursor, authorization and collection lease. It uses GET intake and durable event persistence; it does not renew LINE tokens, retry LINE replies, or drain callbacks. Fast collection respects persisted channel/global Discord 429 cooldowns. Its `cloud_discord_collection` record identifies `source: "cloud_agent"`. With the feature enabled, `/runtime/tick` returns browser standby and performs no collection or send, including from a browser tab whose lifecycle is uncertain. `bridge_maintain` retains its separate recovery responsibilities.
 
+Native Work also officially supports [MCP Events](https://developers.openai.com/plugins/build/mcp-events). An existing task's event subscription is a separate path to test through its supported tools or UI; callback receipt is asynchronous and events may be batched. It is not a substitute for Discord intake: if this wait loop stops while browser ticks are in standby, Discord has no fast collector to discover new REST messages and produce events. LINE's public webhook can still persist new input. Verify event-driven task wakeup and a supported collector/recovery path separately; neither a saved subscription nor a callback `2xx` proves immediate replies.
+
 For cutover, record the existing subscriptions/task prompt and finish pending work. Pause or unsubscribe only the owned dot reply-event consumers, then enable the new receiver with a reviewed activation timestamp. Keep the required `LINE_ENABLE_EVENTS` / `DISCORD_ENABLE_EVENTS` intake flags and existing allowlists; unsubscribe consumers rather than disabling the channel ingestion needed by the new receiver. Use one cloud-task consumer, retain the existing hourly recovery task, and do not add staggered schedules or expand access. Hourly recovery is a fallback, not proof of immediate or continuous service.
 
-Verify fresh LINE and Discord input, a claim and completed send, and the actual reply in the same client conversation with the owned laptop receivers unavailable and browser ticks in standby. Measure source-to-reply time without manual reply nudges, then separately test task interruption, lease expiry/reacquisition, and recovery. Until those checks pass, this path remains experimental. To roll back, stop the new consumer, disable `CLOUD_AGENT_ENABLED` and redeploy, and restore the recorded owned subscriptions and one cloud receiver. Preserve the watermark, claims, send records, secrets and database; never revive uncertain sends by clearing them.
+On 2026-10-15, fresh client messages received native cloud Work replies with the owned local bridge services stopped, browser ticks in standby, and the local cloud-chat panel closed. Observed source-to-reply times were:
+
+| Input | Observed time |
+| --- | --- |
+| LINE | 5.8 seconds |
+| Discord during concurrent LINE/Discord input | 21.3 seconds |
+| Discord alone after resuming the receiver | 11.6 seconds |
+
+These are individual observations, not a latency guarantee or a controlled comparison of models. Physical laptop shutdown, continuous 24-hour operation, and automatic task restart are not established by these tests. The existing hourly fallback cannot provide immediate recovery if the fast receiver stops, and scheduled runs can themselves be delayed or fail.
+
+For each installation, verify fresh LINE and Discord input, a claim and completed send, and the actual reply in the same client conversation with the owned laptop receivers unavailable and browser ticks in standby. Measure source-to-reply time without manual reply nudges, then separately test task interruption, lease expiry/reacquisition, and recovery. This path remains experimental while continuation and restart guarantees are unresolved. To roll back, stop the new consumer, disable `CLOUD_AGENT_ENABLED` and redeploy, and restore the recorded owned subscriptions and one cloud receiver. Preserve the watermark, claims, send records, secrets and database; never revive uncertain sends by clearing them.
 
 ## Checks
 
