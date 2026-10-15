@@ -12,7 +12,41 @@ function setup(){const calls=[];const msg={id:M,channel_id:C,author:{id:U},menti
 const params=(args={guild_id:G})=>({name:'discord.message.created',arguments:args,delivery:{mode:'webhook',url:'https://callback.example.test/events/one',secret:SECRET},cursor:null});
 async function rpc(env,method,p={},headers={}){const body={jsonrpc:'2.0',id:1,method,params:{...p,_meta:{'io.modelcontextprotocol/protocolVersion':V,'io.modelcontextprotocol/clientCapabilities':{}}}};const response=await worker.fetch(new Request('https://site.example/mcp',{method:'POST',headers:{'content-type':'application/json','oai-authenticated-user-id':'owner','MCP-Protocol-Version':V,'Mcp-Method':method,...(method==='tools/call'?{'Mcp-Name':p.name}:{}),...headers},body:JSON.stringify(body)}),env);return{response,body:await response.json()};}
 async function ingress(env,path,input,id='request_12345678',timestamp=String(Math.floor(Date.now()/1000)),bad=false){if(path==='/internal/discord-event'&&!env.preserveFixtureTime)env.fixtureMessage.timestamp=new Date().toISOString();const body=JSON.stringify(input);return worker.fetch(new Request('https://site.example'+path,{method:'POST',headers:{'content-type':'application/json','X-Bridge-Id':id,'X-Bridge-Timestamp':timestamp,'X-Bridge-Signature':bad?'v1,bad':'v1,'+mac(SHARED,`${id}.${timestamp}.${body}`)},body}),env);}
-test('modern discovery returns events, metadata, private cache, complete result',async()=>{const s=setup();const r=await rpc(s.env,'server/discover');assert.deepEqual(r.body.result.capabilities.events,{});assert.equal(r.body.result.resultType,'complete');assert.equal(r.body.result.ttlMs,0);assert.equal(r.body.result.cacheScope,'private');assert.equal(s.calls.length,0);});
+test('modern discovery returns events, metadata, bounded private cache, complete result',async()=>{const s=setup();const r=await rpc(s.env,'server/discover');assert.deepEqual(r.body.result.capabilities.events,{});assert.equal(r.body.result.resultType,'complete');assert.equal(r.body.result.ttlMs,60000);assert.equal(r.body.result.cacheScope,'private');assert.equal(s.calls.length,0);});
+test('private catalog freshness covers only static metadata, independent of current owner and channel configuration',async()=>{
+ const s=setup();const initial=await rpc(s.env,'tools/list');
+ assert.equal(initial.body.result.ttlMs,60000);assert.equal(initial.body.result.cacheScope,'private');
+ Object.assign(s.env,{BRIDGE_RUNTIME:'cloud',BRIDGE_OWNER_SITE_ID:'new-owner',DISCORD_BOT_TOKEN:'',DISCORD_ALLOWED_CHANNEL_IDS:'999999999999999999',LINE_ENABLE_REPLIES:'false'});
+ const changed=await rpc(s.env,'tools/list',{}, {'oai-authenticated-user-id':'new-owner'});
+ assert.deepEqual(changed.body.result,initial.body.result);
+ assert.ok(!JSON.stringify(initial.body.result).includes('test-placeholder'));
+ assert.equal(initial.response.headers.get('cache-control'),'no-store');assert.equal(s.calls.length,0);
+});
+test('only bounded private account tools advertise a closed world and writes remain marked as writes',async()=>{
+ const r=await rpc(setup().env,'tools/list');const byName=new Map(r.body.result.tools.map(t=>[t.name,t]));
+ for(const name of ['bridge_status','line_message_read','line_inbox_read','line_reply','discord_dm_message_read','discord_reply_dm','discord_set_dm_opt_out'])assert.equal(byName.get(name).annotations.openWorldHint,false,name);
+ for(const name of ['discord_offer_help_dm','discord_reply_to_mention','discord_start_work_thread','bridge_maintain'])assert.equal(byName.get(name).annotations.openWorldHint,true,name);
+ for(const name of ['line_reply','discord_reply_dm','discord_set_dm_opt_out'])assert.equal(byName.get(name).annotations.readOnlyHint,false,name);
+});
+test('a retained tool catalog cannot preserve a revoked owner grant',async()=>{
+ const s=setup();await rpc(s.env,'tools/list');s.env.BRIDGE_OWNER_SITE_ID='new-owner';
+ let fetched=false;s.env.FETCH=async()=>{fetched=true;throw Error('must not fetch');};
+ const r=await rpc(s.env,'tools/call',{name:'discord_message_read',arguments:{channel_id:C,message_id:M}});
+ assert.equal(r.response.status,403);assert.equal(r.body.error,'OWNER_ONLY');assert.equal(fetched,false);
+});
+test('a retained tool catalog cannot preserve a revoked channel grant',async()=>{
+ const s=setup();await rpc(s.env,'tools/list');s.env.DISCORD_ALLOWED_CHANNEL_IDS='999999999999999999';
+ const original=s.env.FETCH;let messageRead=false;s.env.FETCH=async u=>{if(u.includes('/messages/'))messageRead=true;return original(u);};
+ const r=await rpc(s.env,'tools/call',{name:'discord_message_read',arguments:{channel_id:C,message_id:M}});
+ assert.equal(r.body.result.isError,true);assert.equal(JSON.parse(r.body.result.content[0].text).error,'CHANNEL_NOT_ALLOWED');assert.equal(messageRead,false);
+});
+test('a retained tool catalog cannot preserve a disabled write feature or cache a tool result',async()=>{
+ const s=setup();s.env.DISCORD_ENABLE_REPLIES='true';await rpc(s.env,'tools/list');s.env.DISCORD_ENABLE_REPLIES='false';
+ const r=await rpc(s.env,'tools/call',{name:'discord_reply_to_mention',arguments:{channel_id:C,message_id:M,content:'do not send'}});
+ assert.equal(r.body.result.isError,true);assert.equal(JSON.parse(r.body.result.content[0].text).error,'DISCORD_ENABLE_REPLIES_DISABLED');
+ assert.equal('ttlMs' in r.body.result,false);assert.equal('cacheScope' in r.body.result,false);
+ assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM actions').get().n,0);
+});
 test('modern HTTP headers must match request',async()=>{const r=await rpc(setup().env,'server/discover',{}, {'Mcp-Method':'tools/list'});assert.equal(r.response.status,400);assert.equal(r.body.error.code,-32020);});
 test('modern tools/call preserves read tool result and complete marker',async()=>{const r=await rpc(setup().env,'tools/call',{name:'bridge_status',arguments:{}});assert.equal(r.body.result.resultType,'complete');assert.equal(r.body.result.isError,false);});
 test('event catalog is authenticated',async()=>{const r=await rpc(setup().env,'events/list',{}, {'oai-authenticated-user-id':''});assert.equal(r.response.status,401);});

@@ -33,6 +33,15 @@ test('LINE is serverless: signed intake, encrypted persistence, authenticated MC
  const responses=await Promise.all([tool(s.env,'line_reply',{event_id:E,content:'reply from dot'}),tool(s.env,'line_reply',{event_id:E,content:'reply from dot'})]);assert.equal(s.sent.length,1);assert.equal(JSON.parse(s.sent[0].opts.body).replyToken,'fixture-reply');assert.equal(s.sent[0].url,'https://api.line.me/v2/bot/message/reply');assert.equal(responses.every(r=>!r.b.result.isError),true);
 });
 test('anonymous or different users cannot read or send through a public Site',async()=>{const s=setup();await webhook(s.env);for(const owner of ['', 'other'])for(const name of ['line_message_read','line_reply']){const r=await tool(s.env,name,{event_id:E,...(name==='line_reply'?{content:'bad'}:{})},owner);assert.ok([401,403].includes(r.r.status));}assert.equal(s.sent.length,0);});
+test('retaining the LINE tool catalog never retains a sender or reply permission',async()=>{
+ for(const revoked of ['sender','reply']){
+  const s=setup();await webhook(s.env);await rpc(s.env,'tools/list');
+  if(revoked==='sender')s.env.LINE_ALLOWED_USER_IDS='U'+'3'.repeat(32);else s.env.LINE_ENABLE_REPLIES='false';
+  const result=await tool(s.env,'line_reply',{event_id:E,content:'must not send'});
+  assert.equal(result.b.result.isError,true);assert.equal(JSON.parse(result.b.result.content[0].text).error,revoked==='sender'?'LINE_SOURCE_NOT_ALLOWED':'LINE_REPLIES_DISABLED');
+  assert.equal(s.sent.length,0);assert.equal(s.env.DB.raw.prepare('SELECT COUNT(*) n FROM actions').get().n,0);
+ }
+});
 test('forged signature and foreign destination never enter persistent storage',async()=>{const s=setup();assert.equal((await webhook(s.env,envelope(),'x'.repeat(43)+'=')).status,401);assert.equal((await webhook(s.env,{...envelope(),destination:U})).status,400);assert.equal(s.env.DB.raw.prepare('SELECT count(*) n FROM cloud_line_messages').get().n,0);});
 test('unknown senders and groups are ignored even with a genuine platform signature',async()=>{const s=setup();for(const source of [{type:'user',userId:'U'+'3'.repeat(32)},{type:'group',userId:U,groupId:'C'+'4'.repeat(32)}]){const b=envelope();b.events[0].source=source;assert.equal((await webhook(s.env,b)).status,200);}assert.equal(s.env.DB.raw.prepare('SELECT count(*) n FROM cloud_line_messages').get().n,0);});
 test('empty Verify request is accepted without waking dot',async()=>{const s=setup();assert.equal((await webhook(s.env,{destination:B,events:[]})).status,200);assert.equal(s.callbacks.length,0);});
