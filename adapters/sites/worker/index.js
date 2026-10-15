@@ -1,11 +1,12 @@
 import {cloudInbox} from './cloud-inbox.js';
-import { maintainTool, maintainCloud, cloudRuntimePage, cloudRuntimeStatus } from './cloud-runtime.js';
+import { maintainTool, maintainCloud, collectCloudDiscord, cloudAgentDiscordEnv, discordRequestTimeoutMs, cloudRuntimePage, cloudRuntimeStatus } from './cloud-runtime.js';
+import {cloudAgentTools,waitForMessage,replyToClaim,cloudAgentStatus,cloudAgentFencePrefix,CloudAgentError} from './cloud-agent.js';
 import { lineWebhook, lineTools, lineCall, lineConfigured, lineSource, requireLine, LineFault } from './line.js';
 import { proxyMcp, proxyConfigured } from './proxy.js';
 import { eventService, EventError, VERSION as MCP2_VERSION } from './events.js';
 import { probeDiscordRuntime } from './runtime-probe.js';
 import { keeperProbePage, createKeeperProbeSocket } from './keeper-probe.js';
-import {discordDiagnosticSource,recordDeliveryTiming,deliveryDiagnostics} from './delivery-diagnostics.js';
+import {lineDiagnosticSource,discordDiagnosticSource,recordDeliveryTiming,deliveryDiagnostics} from './delivery-diagnostics.js';
 const API = 'https://discord.com/api/v10';
 const PROTOCOL = '2025-06-18';
 const ID = /^[0-9]{17,20}$/;
@@ -57,13 +58,13 @@ function channelAllowed(ch,env){
 }
 async function discord(env,path,method='GET',body){
  let r;
- try{r=await (env.FETCH||fetch)(API+path,{method,headers:{Authorization:`Bot ${env.DISCORD_BOT_TOKEN}`,'Content-Type':'application/json','User-Agent':'DiscordBot (https://chatgpt.com, 1.0)'},...(body?{body:JSON.stringify(body)}:{}),redirect:'manual',signal:AbortSignal.timeout(12000)});}
+ try{r=await (env.FETCH||fetch)(API+path,{method,headers:{Authorization:`Bot ${env.DISCORD_BOT_TOKEN}`,'Content-Type':'application/json','User-Agent':'DiscordBot (https://chatgpt.com, 1.0)'},...(body?{body:JSON.stringify(body)}:{}),redirect:'manual',signal:AbortSignal.timeout(discordRequestTimeoutMs(env))});}
  catch{throw new Fault(method==='GET'?'DISCORD_UNAVAILABLE':'DISCORD_WRITE_OUTCOME_UNKNOWN',502);}
  // Refuse redirects before reading their body. Writes remain unknown so their
  // durable action reservation cannot trigger an automatic duplicate send.
  if(r.redirected||r.status>=300&&r.status<400)throw new Fault(method==='GET'?'DISCORD_REDIRECT_DENIED':'DISCORD_WRITE_OUTCOME_UNKNOWN',502);
  if(!r.ok){let error={};try{error=await r.json();}catch{}
-  if(r.status===429)throw new Fault('DISCORD_RATE_LIMITED',429);
+  if(r.status===429){const fault=new Fault('DISCORD_RATE_LIMITED',429);const seconds=Number(r.headers.get('retry-after')||error.retry_after);fault.retryAfterMs=Number.isFinite(seconds)&&seconds>0?Math.min(86400000,Math.max(15000,seconds*1000)):15000;fault.globalRateLimit=error.global===true;throw fault;}
   if(error.code===50007)throw new Fault('DM_NOT_ALLOWED',403);
   throw new Fault(`DISCORD_${r.status}`,r.status>=500?502:r.status);
  }
@@ -149,12 +150,107 @@ async function rate(env,kind,recipient,window,max){
 async function stableNonce(key){const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(key));return Array.from(new Uint8Array(digest)).map(n=>n.toString(16).padStart(2,'0')).join('').slice(0,25);}
 async function sendMessage(env,channelId,content,key,extra={},timingSource){const path=`/channels/${sid(channelId)}/messages`,payload={...messagePayload(content,await stableNonce(key)),...extra};await recordDeliveryTiming(env,timingSource,'send_attempt',Date.now());const r=await discord(env,path,'POST',payload);if(r.channel_id!==channelId||!ID.test(r.id))throw new Fault('DISCORD_WRITE_OUTCOME_UNKNOWN',502);return r;}
 const messagePayload=(content,nonce)=>({content,allowed_mentions:{parse:[],replied_user:false},nonce,enforce_nonce:true});
-async function callTool(name,a,req,env){
+const CLOUD_SOURCE_DENIED=new Set(['LINE_SOURCE_NOT_ALLOWED','LINE_NOT_CONFIGURED','GUILD_NOT_ALLOWED','CHANNEL_NOT_ALLOWED','SOURCE_MISMATCH','BOT_LOOP_BLOCKED','EXPLICIT_MENTION_REQUIRED','DM_CHANNEL_NOT_ALLOWED','DM_RECIPIENT_MISMATCH','DM_SOURCE_MISMATCH','DM_SOURCE_TOO_OLD','DM_STOP_REQUEST','DM_OPTED_OUT','DM_OUTREACH_PENDING','DISCORD_403','DISCORD_404','DISCORD_UNAVAILABLE','DISCORD_RATE_LIMITED']);
+function cloudSourceKey(key){
+ if(typeof key!=='string')throw new Fault('INVALID_CLOUD_SOURCE');
+ const line=/^line:([A-Za-z0-9_-]{8,100})$/.exec(key);if(line)return {kind:'line_reply',id:line[1]};
+ const discord=/^discord_(dm|guild):([0-9]{17,20}):([0-9]{17,20})$/.exec(key);
+ if(!discord)throw new Fault('INVALID_CLOUD_SOURCE');
+ return {kind:discord[1]==='dm'?'discord_reply_dm':'discord_reply_to_mention',channelId:discord[2],id:discord[3]};
+}
+async function readCloudSource(env,key,afterMs){
+ const parsed=cloudSourceKey(key);
+ try{
+  if(parsed.kind==='line_reply'){
+   if(env.LINE_ENABLE_EVENTS!=='true'||env.LINE_ENABLE_REPLIES!=='true')return null;
+   const {row,m}=await lineSource(env,{event_id:parsed.id});if(row.occurred_at<afterMs)return null;
+   return {source_key:key,source_id:row.event_id,conversation_key:'line:'+row.user_id,reply_kind:parsed.kind,content:m.text,timestamp:new Date(row.occurred_at).toISOString()};
+  }
+  if(env.DISCORD_ENABLE_EVENTS!=='true'||env.DISCORD_ENABLE_REPLIES!=='true')return null;
+  const record=await dbFirst(env,'SELECT data_json FROM event_records WHERE id=?',(parsed.kind==='discord_reply_dm'?'discord_dm_message_':'discord_message_')+parsed.id);
+  if(!record)return null;let data;try{data=JSON.parse(record.data_json);}catch{return null;}
+  if(data.channel_id!==parsed.channelId||data.message_id!==parsed.id||data.guild_id!==env.DISCORD_GUILD_ID)return null;
+  requireConfig(env);
+  const a={channel_id:parsed.channelId,message_id:parsed.id};
+  const {ch,m}=await (parsed.kind==='discord_reply_dm'?dmSource(env,a):source(env,a,{mention:true}));
+  const at=Date.parse(m.timestamp);if(!Number.isFinite(at)||at<afterMs||at>Date.now()+60000||data.author_id!==m.author.id)return null;
+  if(parsed.kind==='discord_reply_dm'){
+   if(await honorDmStop(env,m))return null;
+   const pref=await dbFirst(env,'SELECT blocked,updated_at FROM dm_preferences WHERE user_id=?',m.author.id);
+   if(pref?.blocked&&at<=pref.updated_at)return null;
+  }
+  if(typeof m.content!=='string'||!m.content.trim())return null;
+  return {source_key:key,source_id:m.id,conversation_key:(parsed.kind==='discord_reply_dm'?'discord_dm:':'discord_guild:')+ch.id,reply_kind:parsed.kind,content:m.content,timestamp:new Date(at).toISOString()};
+ }catch(error){if(CLOUD_SOURCE_DENIED.has(error?.code))return null;throw error;}
+}
+async function readCloudCandidate(env,{after_ms=0,exclude_source_keys=[],source_key,deadline_ms=Date.now()+25000}={}){
+ if(!Number.isSafeInteger(after_ms)||after_ms<0)throw new Fault('INVALID_CLOUD_START_TIME');
+ if(Date.now()>=deadline_ms)return null;
+ const sourceEnv=cloudAgentDiscordEnv(env,{deadline_ms});
+ // Exact reads reauthorize the durable source. Action state is checked when
+ // listing, while the normal write path remains responsible for send deduplication.
+ if(source_key!==undefined)return readCloudSource(sourceEnv,source_key,after_ms);
+ const exclude=JSON.stringify(exclude_source_keys);
+ const lineUsers=JSON.stringify((env.LINE_ALLOWED_USER_IDS||'').split(',').filter(id=>/^U[0-9a-f]{32}$/.test(id)));
+ const fencePrefix=await cloudAgentFencePrefix(env.BRIDGE_OWNER_SITE_ID);
+ let cursor=null;
+ for(;;){
+ if(Date.now()>=deadline_ms)return null;
+ const rows=(await env.DB.prepare(`SELECT source_key,created_at,priority FROM (
+  SELECT 'line:'||m.event_id AS source_key,m.created_at,0 AS priority FROM cloud_line_messages m
+  WHERE m.occurred_at>=? AND m.user_id IN (SELECT value FROM json_each(?)) AND NOT EXISTS(SELECT 1 FROM actions a WHERE a.action_key='linereply:'||m.event_id)
+  UNION ALL
+  SELECT 'discord_dm:'||json_extract(e.data_json,'$.channel_id')||':'||json_extract(e.data_json,'$.message_id'),e.created_at,1 FROM event_records e
+  WHERE e.id LIKE 'discord_dm_message_%' AND e.created_at>=? AND NOT EXISTS(SELECT 1 FROM actions a WHERE a.action_key='dmreply:'||json_extract(e.data_json,'$.message_id'))
+  UNION ALL
+  SELECT 'discord_guild:'||json_extract(e.data_json,'$.channel_id')||':'||json_extract(e.data_json,'$.message_id'),e.created_at,1 FROM event_records e
+  WHERE e.id LIKE 'discord_message_%' AND e.created_at>=? AND json_extract(e.data_json,'$.mentions_bot')=1 AND NOT EXISTS(SELECT 1 FROM actions a WHERE a.action_key='reply:'||json_extract(e.data_json,'$.message_id'))
+ ) AS candidates WHERE source_key NOT IN (SELECT value FROM json_each(?))
+ AND NOT EXISTS(SELECT 1 FROM bridge_runtime f WHERE f.key GLOB ?
+  AND json_extract(CASE WHEN json_valid(f.value) THEN f.value ELSE '{}' END,'$.source_key')=candidates.source_key)
+ AND (? IS NULL OR priority>? OR (priority=? AND (created_at>? OR (created_at=? AND source_key>?))))
+ ORDER BY priority,created_at,source_key LIMIT 100`).bind(after_ms,lineUsers,after_ms,after_ms,exclude,fencePrefix+'*',cursor?.priority??null,cursor?.priority??null,cursor?.priority??null,cursor?.created_at??null,cursor?.created_at??null,cursor?.source_key??null).all()).results||[];
+ for(const row of rows){if(Date.now()>=deadline_ms)return null;const candidate=await readCloudSource(sourceEnv,row.source_key,after_ms);if(candidate)return candidate;}
+ if(rows.length<100)return null;
+ // Rejected/deleted sources do not consume a claim. Advance with all keys
+ // so a full page of stale records, including timestamp ties, cannot hide
+ // a later authorized message on every subsequent long poll.
+ cursor=rows.at(-1);
+ }
+}
+function cloudAgentAdapters(req,ctx){return {
+ collection_background_supported:typeof ctx?.waitUntil==='function',
+ collectDiscord:env=>{const task=collectCloudDiscord(env,{discord,events,configured,source:'cloud_agent'});if(typeof ctx?.waitUntil==='function')ctx.waitUntil(task.catch(()=>undefined));return task;},
+ readCandidate:(env,args)=>{const task=readCloudCandidate(env,args);if(typeof ctx?.waitUntil==='function')ctx.waitUntil(task.catch(()=>undefined));return task;},
+ sendReply:async(env,candidate,content)=>{
+  const parsed=cloudSourceKey(candidate.source_key);
+  if(parsed.kind!==candidate.reply_kind||parsed.id!==candidate.source_id)throw new Fault('CLOUD_SOURCE_MISMATCH',403);
+  return callTool(parsed.kind,{...(parsed.kind==='line_reply'?{event_id:parsed.id}:{channel_id:parsed.channelId,message_id:parsed.id}),content},req,env,ctx);
+ },
+};}
+async function recordCloudAgentRead(env,result){
+ // Only a message actually returned by the wait tool is a model-visible read.
+ // Candidate scans and internal authorization reads retain their old meaning.
+ if(result?.status!=='message')return;
+ try{
+  const parsed=cloudSourceKey(result.source_key),at=Date.now();
+  const timing=parsed.kind==='line_reply'?lineDiagnosticSource(parsed.id):discordDiagnosticSource(env,parsed.kind==='discord_reply_dm'?'dm':'guild',{id:parsed.channelId},{id:parsed.id,channel_id:parsed.channelId});
+  await recordDeliveryTiming(env,timing,'read_tool',at);
+ }catch{ /* Telemetry cannot invalidate an acquired claim. */ }
+}
+async function callTool(name,a,req,env,ctx){
  const enteredAt=Date.now();
+ if(cloudAgentTools.some(tool=>tool.name===name)){
+  const owner=authenticate(req,env);
+  if(env.BRIDGE_RUNTIME!=='cloud')throw new Fault('CLOUD_RUNTIME_REQUIRED',503);
+  const result=await (name==='bridge_wait_for_message'?waitForMessage(env,owner,a,cloudAgentAdapters(req,ctx)):replyToClaim(env,owner,a,cloudAgentAdapters(req,ctx)));
+  if(name==='bridge_wait_for_message')await recordCloudAgentRead(env,result);
+  return result;
+ }
  if(env.BRIDGE_RUNTIME==='cloud'&&name==='bridge_maintain'){authenticate(req,env);return maintainCloud(env,{discord,events,configured,source:'mcp'});}
  if(env.BRIDGE_RUNTIME==='cloud'&&name.startsWith('line_')){authenticate(req,env);return lineCall(name,a,env,{enteredAt});}
  if(name==='bridge_status'){
-  const who=authenticate(req,env,true);const runtime=typeof env.RUNTIME_STATUS==='function'?env.RUNTIME_STATUS():{};const subscribed=env.DB?await dbFirst(env,'SELECT COUNT(*) AS n FROM event_subscriptions WHERE active = 1 AND expires_at > ?',Date.now()):null;const accepted=env.DB?await dbFirst(env,"SELECT updated_at FROM bridge_runtime WHERE key = 'event_callback_accepted'"):null;const diagnostics=await deliveryDiagnostics(env,who,{channel});return {configured:configured(env),site_user_id:who,owner_configured:!!env.BRIDGE_OWNER_SITE_ID,persistence_available:!!env.DB,guild_configured:!!env.DISCORD_GUILD_ID,token_configured:!!env.DISCORD_BOT_TOKEN,mode:env.BRIDGE_RUNTIME==='cloud'?'cloud_worker':'mcp_tools_and_events',line_configured:lineConfigured(env),line_events_enabled:env.LINE_ENABLE_EVENTS==='true',...(env.BRIDGE_RUNTIME==='cloud'?{cloud_runtime:await cloudRuntimeStatus(env)}:{}),...(diagnostics?{delivery_diagnostics:diagnostics}:{}),mcp_events_supported:true,events_enabled:env.DISCORD_ENABLE_EVENTS==='true',event_transport_configured:!!((env.COMPANION_ORIGIN||env.BRIDGE_RUNTIME==='cloud')&&env.COMPANION_SHARED_KEY),gateway_running:runtime.gateway_ready===true,active_event_subscriptions:Number(subscribed?.n||0),last_callback_accepted_at:accepted?.updated_at?new Date(accepted.updated_at).toISOString():null,dot_auto_wake:Number(subscribed?.n||0)?null:false,automatic_reaction_selection:false,daily_digest_scheduled:false,privacy:description};
+  const who=authenticate(req,env,true);const runtime=typeof env.RUNTIME_STATUS==='function'?env.RUNTIME_STATUS():{};const subscribed=env.DB?await dbFirst(env,'SELECT COUNT(*) AS n FROM event_subscriptions WHERE active = 1 AND expires_at > ?',Date.now()):null;const accepted=env.DB?await dbFirst(env,"SELECT updated_at FROM bridge_runtime WHERE key = 'event_callback_accepted'"):null;const diagnostics=await deliveryDiagnostics(env,who,{channel});return {configured:configured(env),site_user_id:who,owner_configured:!!env.BRIDGE_OWNER_SITE_ID,persistence_available:!!env.DB,guild_configured:!!env.DISCORD_GUILD_ID,token_configured:!!env.DISCORD_BOT_TOKEN,mode:env.BRIDGE_RUNTIME==='cloud'?'cloud_worker':'mcp_tools_and_events',line_configured:lineConfigured(env),line_events_enabled:env.LINE_ENABLE_EVENTS==='true',...(env.BRIDGE_RUNTIME==='cloud'?{cloud_runtime:await cloudRuntimeStatus(env),...(env.BRIDGE_OWNER_SITE_ID&&who===env.BRIDGE_OWNER_SITE_ID?{cloud_agent:await cloudAgentStatus(env,who)}:{})}:{}),...(diagnostics?{delivery_diagnostics:diagnostics}:{}),mcp_events_supported:true,events_enabled:env.DISCORD_ENABLE_EVENTS==='true',event_transport_configured:!!((env.COMPANION_ORIGIN||env.BRIDGE_RUNTIME==='cloud')&&env.COMPANION_SHARED_KEY),gateway_running:runtime.gateway_ready===true,active_event_subscriptions:Number(subscribed?.n||0),last_callback_accepted_at:accepted?.updated_at?new Date(accepted.updated_at).toISOString():null,dot_auto_wake:Number(subscribed?.n||0)?null:false,automatic_reaction_selection:false,daily_digest_scheduled:false,privacy:description};
  }
  authenticate(req,env);requireConfig(env);
  if(name==='discord_dm_message_read'){const {ch,m}=await dmSource(env,a);const stopped=await honorDmStop(env,m);await recordDeliveryTiming(env,discordDiagnosticSource(env,'dm',ch,m),'read_tool',enteredAt);return {...present(env,m),url:`https://discord.com/channels/@me/${m.channel_id}/${m.id}`,scope:'dm',opted_out:stopped};}
@@ -246,7 +342,7 @@ function checkModernRequest(req,body){
 export default {async fetch(req,env,ctx){
  const url=new URL(req.url);
  if(url.pathname==='/webhooks/line'&&env.BRIDGE_RUNTIME==='cloud')return lineWebhook(req,env,events,ctx);
- const availableTools=[...tools,...lineTools,maintainTool];
+ const availableTools=[...tools,...lineTools,maintainTool,...cloudAgentTools];
  const origin=req.headers.get('origin');if(origin&&origin!==url.origin)return json({error:'CROSS_ORIGIN_DENIED'},403);
  if(env.BRIDGE_RUNTIME==='cloud'&&['/runtime/inbox','/runtime/line-reply'].includes(url.pathname)){
   try{authenticate(req,env);return await cloudInbox(req,env);}catch(e){return json({error:e instanceof Fault||e instanceof LineFault?e.code:'INBOX_UNAVAILABLE'},e.status||503);}
@@ -255,6 +351,7 @@ export default {async fetch(req,env,ctx){
   try{authenticate(req,env);}catch(e){return json({error:e.code},e.status);}
   if(url.pathname==='/runtime/tick'){
    if(req.method!=='POST'||origin!==url.origin)return json({error:'METHOD_OR_ORIGIN_DENIED'},403);
+   if(env.CLOUD_AGENT_ENABLED==='true')return json({mode:'standby',source:'browser',reason:'CLOUD_AGENT_ACTIVE',collected:0,delivered:0});
    try{return json(await maintainCloud(env,{discord,events,configured,source:'browser'}));}catch{return json({error:'CLOUD_MAINTENANCE_FAILED'},503);}
   }
   if(req.method!=='GET')return json({error:'METHOD_NOT_ALLOWED'},405);
@@ -312,8 +409,8 @@ export default {async fetch(req,env,ctx){
  if(body.method!=='tools/call')return json({jsonrpc:'2.0',id:body.id??null,error:{code:-32601,message:'Method not found'}},modern?404:200);
  try{
   const tool=availableTools.find(t=>t.name===body.params?.name);if(!tool)throw new Fault('UNKNOWN_TOOL');const a=body.params?.arguments??{};validateArgs(tool,a);
-  const result=await callTool(tool.name,a,req,env);return ok({content:[{type:'text',text:JSON.stringify(result)}],isError:false});
- }catch(e){const code=e instanceof Fault||e instanceof LineFault?e.code:'INTERNAL_ERROR';if(e.status===401||e.status===403&&['OWNER_ONLY'].includes(code))return json({error:code},e.status);return ok({content:[{type:'text',text:JSON.stringify({error:code})}],isError:true});}
+  const result=await callTool(tool.name,a,req,env,ctx);return ok({content:[{type:'text',text:JSON.stringify(result)}],isError:false});
+ }catch(e){const code=e instanceof Fault||e instanceof LineFault||e instanceof CloudAgentError?e.code:'INTERNAL_ERROR';if(e.status===401||e.status===403&&['OWNER_ONLY'].includes(code))return json({error:code},e.status);return ok({content:[{type:'text',text:JSON.stringify({error:code})}],isError:true});}
 }};
 function encLength(s){return new TextEncoder().encode(s).length;}
 export {tools,callTool,channelAllowed,source,configured,Fault,events,checkModernRequest,dmSource,honorDmStop,isDmStop};

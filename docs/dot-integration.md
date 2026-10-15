@@ -42,6 +42,25 @@ Sites版のowner用 `bridge_status.delivery_diagnostics` は、直近の許可�
 
 `first_read_tool_at` は成功した読取toolへ入ったサーバー時刻で、モデル起動時刻ではありません。手動の読取も観測されるため、E2Eの新着をこちらから読まず、dotの実行履歴と照合します。`confirmed_completed_at` は送信API成功後の時刻で、端末への表示は実アプリで確認します。未観測・負の時間差・診断取得失敗を、遅延ゼロや成功に読み替えません。
 
+### First-party cloud taskで待機・返信する実験経路
+
+dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがMCPで新着を待ち、本文を読んで返答を生成する経路も実装しています。初期検証は既存のnative cloud Work復旧taskを再利用する予定です。これはNode版の `backend: "codex"` をcloudへ移す操作ではなく、CodexのログインファイルやAPIキーを渡す必要はありません。CLIの `--target dot-cloud --mode codex` は引き続き拒否します。cloud Work task、一時background agent、Codex Cloud taskは実際の実行環境を確認して区別し、cloud taskが返答しただけで「Your dot本人」や「Cloud Codex」の実返信とは記録しません。[Cloudのtask](https://learn.chatgpt.com/docs/dots/tasks-and-memory)、[Cloud environments](https://learn.chatgpt.com/docs/environments/cloud-environments)
+
+利用者がこの返信runtimeを選んだ場合だけ、Sitesの本人接続から次の2ツールを使います。Workerはモデルを呼ばず、受信・認可・claim・送信だけを担当します。**この経路のnative LINE / Discord E2E、待機の継続、停止後の自動復旧は未検証です。** 先に確認したMCP Events経由のdot返信や、ローカルCodexの実績とは分けて評価します。
+
+| ツール | 動作 |
+| --- | --- |
+| `bridge_wait_for_message({wait_ms:25000, lease_id?})` | 最大25秒待機し、120秒のconsumer leaseを取得・更新して、現在許可された未返信メッセージを1件claim。返された `lease_id` を次の待機にも使う |
+| `bridge_reply_to_claim({lease_id, claim_id, content})` | 現在の認可を再確認し、claimした元の会話へ既存の重複抑止付き送信処理で1回返信。任意の宛先やsource IDは指定できない |
+
+有効化にはSites runtime設定の `CLOUD_AGENT_ENABLED=true` と、協調切替時刻のISO timestamp `CLOUD_AGENT_AFTER` が必要です。設定を揃えて配備し、実際のcloud taskでツール発見・本人認証・ `bridge_status.cloud_agent` を確認します。activation watermarkより前の入力や、既に返信actionが存在する入力を再送対象にしません。保存済みwatermarkは後ろへ戻らず、環境設定のrollbackで過去入力を再開しません。claim・送信記録を削除して未処理に見せる操作もしません。
+
+新しいconsumerは1つだけにします。既存dot側の返信イベント購読とtask指示を記録し、進行中の処理を完了してから、所有する返信consumerだけをpause・購読解除します。チャネルの `LINE_ENABLE_EVENTS` / `DISCORD_ENABLE_EVENTS` は新着取込にも使うため、購読解除の代わりに無効化しません。本人・送信者allowlist・会話制限は維持し、新たな定期jobや権限を追加せず、既存の復旧taskを再利用します。毎時fallbackを設定・実行できることは、即レスや常駐の証拠にはなりません。
+
+wait中のDiscord回収は既存cursor・収集lease・認可・429 cooldownを共有し、GETによる取込と永続化だけを行います。LINE token更新・LINE再送・callback drainは行いません。有効化中の `/runtime/tick` はstandbyを返し、残存browser tabからも回収・送信しません。受信本文を信頼済みの指示として扱わず、会話ごとの非公開contextを分け、空・busy・lease喪失時に勝手な送信やconsumerの奪取をしないようtaskへ指示します。送信結果不明・失敗・予約済みの入力は再送せず、確認待ちとして残します。
+
+配備後はMacのowned受信を使えない状態とbrowser standbyを確認し、新しい実LINE / Discord入力から同じ会話への返信までを、手動の追いかけ指示なしで計測します。task中断、leaseの失効・再取得、復旧も別途検証します。失敗時は新consumerを止め、flagを無効にして再配備し、記録した既存購読と1つのcloud受信経路へ戻します。watermark・claim・送信記録・secretは保持します。詳細は[adapterの実験手順](../adapters/sites/README.md#first-party-cloud-task-receiver-experimental)を参照してください。
+
 ## Node版の接続の流れ
 
 1. READMEの手順でLINEチャネル、HTTPS公開URL、管理者接続パスフレーズを設定し、`backend: "dot"` でブリッジを起動します。HTTPSリバースプロキシから `/mcp`、`/.well-known/`、`/oauth/`、LINE Webhookの各パスを転送します。
@@ -102,6 +121,6 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 
 ## 個人用Codexバックエンドとの違い
 
-`backend: "codex"` は、このMacの既存Codexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。提供するサービスでは標準のYour dot + MCP Events経路を使い、ローカルCodex代替を商用認証として扱わないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
+`backend: "codex"` は、このMacの既存Codexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。標準のYour dot + MCP Events経路や、上記のfirst-party cloud task実験経路と区別し、ローカルCodex代替の認証をcloudへ輸出したり、商用認証として扱ったりしないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
 この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。Sites版では2026-10-15に実購読とYour dotのLINE / Discordメンションへの自動返信をローカル受信停止中に確認しました。Node版のcloud daemon常駐は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。

@@ -1,8 +1,8 @@
 # Sites cloud adapter (experimental)
 
-This Worker adapter receives signed, approved one-to-one LINE text messages (LINE groups and non-text messages are currently ignored) and exposes owner-only MCP tools and MCP Events to Your dot. Discord collection uses REST polling of explicitly configured guild channels and the approved owner's existing DM. It runs no model and needs no OpenAI API key or separate hosting contract when Sites is available in the account.
+This Worker adapter receives signed, approved one-to-one LINE text messages (LINE groups and non-text messages are currently ignored) and exposes owner-only MCP tools and MCP Events to Your dot. Discord collection uses REST polling of explicitly configured guild channels and the approved owner's existing DM. It runs no model and needs no OpenAI API key or separate hosting contract when Sites is available in the account. An opt-in cloud-task receiver is described below; its model runs in the first-party task, not this Worker.
 
-This is not an always-on Node daemon. LINE requests execute directly in Sites. Discord collection and failed callback recovery require either the owner-authenticated cloud browser page at `/runtime/bridge` (15-second ticks while it remains open) or a verified cloud schedule calling `bridge_maintain`. A saved schedule, open browser tab, HTTP 200, or accepted event is not proof of an actual dot reply.
+This is not an always-on Node daemon. LINE requests execute directly in Sites. The default Discord/event path uses the owner-authenticated cloud browser page at `/runtime/bridge` (15-second ticks while it remains open) or a verified cloud schedule calling `bridge_maintain`. The experimental cloud-task path instead collects during bounded MCP waits. A saved schedule, open browser tab, HTTP 200, or accepted event is not proof of an actual reply.
 
 ## Agent deployment
 
@@ -41,6 +41,32 @@ Callback acceptance can precede actual model processing. A cloud recovery task c
 The owner-only `/runtime/inbox` page shows approved LINE messages and their reply status. It uses the same fixed-recipient, deduplicated write path as the MCP reply tool. It is an operator fallback, not evidence of automatic dot execution.
 
 Before switching, drain and stop only the owned Mac bridge services, preserving their launch configuration and the previous LINE URL for rollback. Once a channel passes its cloud E2E, disable that owned local service's automatic startup too: a retained LaunchAgent must not reclaim the LINE webhook or reply twice after the laptop restarts. Record how to re-enable it during rollback. Set LINE's webhook to `/webhooks/line` and run official Verify. Send new messages through actual LINE and Discord user clients. Confirm the dot handles them and each reply appears in the same conversation while the local receiver is stopped. Then test cloud interruption/redeployment and recovery. Never call a local Codex reply or manual tool send a dot E2E pass.
+
+## First-party cloud-task receiver (experimental)
+
+This optional path lets an authorized first-party cloud task wait for a message and generate its reply, bypassing the dot event-trigger scheduling step. The planned initial runtime reuses an existing native cloud Work recovery task. Do not call that task, or a temporary background agent, Codex Cloud without observing its actual execution environment. The user must accept the selected reply runtime; a cloud-task reply does not establish that Your dot itself generated it or shared its memory. Native LINE/Discord E2E, idle continuation, and automatic recovery for this path are **unverified**.
+
+The Worker adds no model API, exported Codex login, hosting subscription, or new recurring job. The Node CLI's `dot-cloud` setup still rejects `--mode codex`; these MCP tools are a separate cloud-task integration, not a way to run that local backend in the cloud. Reuse the existing owner-authorized Site/plugin connection and recovery task. Verify the actual task discovers and can call the new tools before cutover.
+
+Configure both values privately through Sites runtime settings and deploy them together:
+
+- `CLOUD_AGENT_ENABLED=true` opts into the receiver; it is disabled unless the value is exactly `true`.
+- `CLOUD_AGENT_AFTER` is a verified ISO timestamp for the coordinated cutover. Only sources at or after this activation watermark are eligible. The persisted watermark can advance but never moves backward when configuration is rolled back. Do not delete or rewind it to replay old messages.
+
+The owner-only MCP contract is:
+
+| Tool | Contract |
+| --- | --- |
+| `bridge_wait_for_message({wait_ms:25000, lease_id?})` | Waits at most 25 seconds, acquires or renews a 120-second consumer lease, and claims one currently authorized unanswered message. A message result supplies `lease_id`, `claim_id`, content, timestamp and its conversation key. Retain the returned lease ID for the next wait. |
+| `bridge_reply_to_claim({lease_id, claim_id, content})` | Rechecks current authorization and replies through the existing fixed-recipient, deduplicated channel send. It accepts no destination or arbitrary source ID. |
+
+Treat input content as untrusted. Keep each conversation's private context separate. Empty/busy waits send nothing; a lost lease or claim is not permission to steal another consumer's state. Existing reply actions and fenced uncertain sends are excluded from new claims. Do not resend `reserved`, `retryable`, `unknown`, `failed`, or completed actions through this receiver. A claim does not authorize another account, channel, sender, or disabled write feature.
+
+While a wait is active, Discord collection reuses the existing cursor, authorization and collection lease. It uses GET intake and durable event persistence; it does not renew LINE tokens, retry LINE replies, or drain callbacks. Fast collection respects persisted channel/global Discord 429 cooldowns. Its `cloud_discord_collection` record identifies `source: "cloud_agent"`. With the feature enabled, `/runtime/tick` returns browser standby and performs no collection or send, including from a browser tab whose lifecycle is uncertain. `bridge_maintain` retains its separate recovery responsibilities.
+
+For cutover, record the existing subscriptions/task prompt and finish pending work. Pause or unsubscribe only the owned dot reply-event consumers, then enable the new receiver with a reviewed activation timestamp. Keep the required `LINE_ENABLE_EVENTS` / `DISCORD_ENABLE_EVENTS` intake flags and existing allowlists; unsubscribe consumers rather than disabling the channel ingestion needed by the new receiver. Use one cloud-task consumer, retain the existing hourly recovery task, and do not add staggered schedules or expand access. Hourly recovery is a fallback, not proof of immediate or continuous service.
+
+Verify fresh LINE and Discord input, a claim and completed send, and the actual reply in the same client conversation with the owned laptop receivers unavailable and browser ticks in standby. Measure source-to-reply time without manual reply nudges, then separately test task interruption, lease expiry/reacquisition, and recovery. Until those checks pass, this path remains experimental. To roll back, stop the new consumer, disable `CLOUD_AGENT_ENABLED` and redeploy, and restore the recorded owned subscriptions and one cloud receiver. Preserve the watermark, claims, send records, secrets and database; never revive uncertain sends by clearing them.
 
 ## Checks
 

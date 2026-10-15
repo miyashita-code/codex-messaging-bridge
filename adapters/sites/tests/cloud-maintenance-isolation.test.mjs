@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync,readdirSync} from 'node:fs';
 import {createHmac} from 'node:crypto';
-import worker from '../worker/index.js';
-import {maintainCloud,cloudRuntimeStatus} from '../worker/cloud-runtime.js';
+import worker,{events as liveEvents} from '../worker/index.js';
+import {maintainCloud,cloudRuntimeStatus,collectCloudDiscord,discordRequestTimeoutMs,cloudAgentDiscordEnv} from '../worker/cloud-runtime.js';
 
 const G='1'.repeat(18),BAD='2'.repeat(18),GOOD='3'.repeat(18),BOT='4'.repeat(18),OWNER='5'.repeat(18);
 const LINE_OWNER='U'+'1'.repeat(32),LINE_BOT='U'+'2'.repeat(32),LINE_EVENT='01ISOLATIONLINEEVENT00001';
@@ -119,4 +119,103 @@ test('invalid saved cursor and global start configuration remain fatal instead o
   await assert.rejects(maintainCloud(s.env,{configured:()=>true,discord:async()=>({id:BAD,guild_id:G,type:0}),events:{drain:async()=>({delivered:0})}}),problem==='cursor'?/INVALID_CURSOR/:/DISCORD_START_TIME_REQUIRED/);
   assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key='cloud_lease'").get().n,0);assert.equal((await cloudRuntimeStatus(s.env)).healthy,false);
  }
+});
+
+const collectionDeps=env=>({configured:()=>true,events:liveEvents,discord:async(_env,path)=>{
+ const response=await env.FETCH('https://discord.com/api/v10'+path,{method:'GET'});
+ if(response.status===429)throw Object.assign(Error('private upstream rate-limit body'),{code:'DISCORD_RATE_LIMITED',retryAfterMs:45000});
+ if(!response.ok)throw Object.assign(Error('private upstream error'),{code:'DISCORD_'+response.status});
+ return response.json();
+}});
+test('cloud-agent collection only ingests Discord and preserves queued LINE replies and notifications without sending',async t=>{
+ const s=setup();t.after(()=>s.raw.close());await queueLine(s.env);await subscribeDiscord(s.env);s.env.DISCORD_POLL_CHANNEL_IDS=GOOD;
+ s.raw.prepare('INSERT INTO actions (action_key,kind,source_id,recipient_id,status,created_at) VALUES (?,?,?,?,?,?)').run('linereply:'+LINE_EVENT,'linereply',LINE_EVENT,LINE_OWNER,'retryable',Date.now());
+ s.raw.prepare('INSERT INTO bridge_runtime VALUES (?,?,?)').run('line_reply_retry:'+LINE_EVENT,'fixture-sealed-pending-reply',Date.now());
+ let sends=0;s.env.LINE_FETCH=async()=>{sends++;throw Error('must not send');};
+ const result=await collectCloudDiscord(s.env,collectionDeps(s.env));
+ assert.equal(result.observed,1);assert.deepEqual(result.failures,[]);assert.equal(result.source,'cloud_agent');assert.equal(result.mode,'cloud_collection');
+ assert.equal(s.renewals.length,0);assert.equal(sends,0);assert.equal(s.callbacks.length,0);
+ assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM event_outbox WHERE status='pending'").get().n,2);
+ assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+GOOD).value,s.messageId);
+ assert.equal(s.raw.prepare('SELECT status FROM actions WHERE source_id=?').get(LINE_EVENT).status,'retryable');
+ assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('line_reply_retry:'+LINE_EVENT).value,'fixture-sealed-pending-reply');
+ const marker=JSON.parse(s.raw.prepare("SELECT value FROM bridge_runtime WHERE key='cloud_discord_collection'").get().value);
+ assert.equal(marker.source,'cloud_agent');assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key IN ('cloud_maintenance','cloud_mcp_maintenance','cloud_lease')").get().n,0);
+ for(const privateValue of [GOOD,LINE_OWNER,'fixture-sealed-pending-reply','fixture-discord-token'])assert.ok(!JSON.stringify(result).includes(privateValue));
+});
+test('a cloud-agent collector shares the maintenance lease and cannot duplicate concurrent intake',async t=>{
+ const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=GOOD;
+ const deps=collectionDeps(s.env),original=deps.discord;let release,ready;
+ const started=new Promise(resolve=>{ready=resolve;});
+ deps.discord=async(env,path)=>{if(path==='/channels/'+GOOD){ready();await new Promise(resolve=>{release=resolve;});}return original(env,path);};
+ const collecting=collectCloudDiscord(s.env,deps);await started;
+ assert.equal((await collectCloudDiscord(s.env,collectionDeps(s.env))).busy,true);
+ assert.equal((await maintainCloud(s.env,collectionDeps(s.env))).busy,true);assert.equal(s.renewals.length,0);
+ release();assert.equal((await collecting).observed,1);
+ assert.equal((await collectCloudDiscord(s.env,collectionDeps(s.env))).observed,0);
+ assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM event_records').get().n,1);
+ assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key='cloud_lease'").get().n,0);
+});
+test('fast collection persists per-channel rate-limit cooldown across calls without skipping another channel',async t=>{
+ const s=setup();t.after(()=>s.raw.close());const deps=collectionDeps(s.env),original=deps.discord;let limitedReads=0;
+ deps.discord=async(env,path)=>{if(path==='/channels/'+BAD){limitedReads++;throw Object.assign(Error(PRIVATE),{code:'DISCORD_RATE_LIMITED',retryAfterMs:45000});}return original(env,path);};
+ const before=Date.now(),first=await collectCloudDiscord(s.env,deps);
+ assert.equal(first.observed,1);assert.deepEqual(first.failures,['DISCORD_CHANNEL_1:DISCORD_RATE_LIMITED']);
+ const cooldown=s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_discord_backoff:'+BAD);
+ assert.ok(Number(cooldown.value)>=before+45000);assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+BAD).value,s.previous);
+ assert.equal((await collectCloudDiscord(s.env,deps)).observed,0);assert.equal(limitedReads,1);
+ s.raw.prepare('UPDATE bridge_runtime SET value=? WHERE key=?').run('0','cloud_discord_backoff:'+BAD);
+ await collectCloudDiscord(s.env,deps);assert.equal(limitedReads,2);
+});
+test('fast collection respects global Discord cooldown and defaults unknown retry timing to fifteen seconds',async t=>{
+ for(const global of [false,true]){
+  const s=setup();t.after(()=>s.raw.close());let reads=0;const deps=collectionDeps(s.env),original=deps.discord;
+  deps.discord=async(env,path)=>{reads++;if(path==='/channels/'+BAD)throw Object.assign(Error(PRIVATE),{code:'DISCORD_RATE_LIMITED',globalRateLimit:global,retryAfterMs:NaN});return original(env,path);};
+  const before=Date.now(),result=await collectCloudDiscord(s.env,deps);
+  const key=global?'cloud_discord_backoff:global':'cloud_discord_backoff:'+BAD;
+  assert.ok(Number(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get(key).value)>=before+15000);
+  if(global){assert.equal(reads,1);assert.equal(result.observed,0);await collectCloudDiscord(s.env,deps);assert.equal(reads,1);}
+  else assert.equal(result.observed,1);
+ }
+});
+test('collection always rechecks current Discord authorization and releases its lease on persistence failure',async t=>{
+ for(const fault of ['permission','persistence']){
+  const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=GOOD;
+  if(fault==='permission')s.env.DISCORD_ALLOWED_CHANNEL_IDS=BAD;
+  else {const original=s.env.DB.prepare;s.env.DB.prepare=sql=>sql.startsWith('INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)')?{bind:()=>({run:async()=>{throw Error('FIXTURE_CURSOR_WRITE_FAILED');}})}:original(sql);}
+  if(fault==='permission'){
+   const result=await collectCloudDiscord(s.env,collectionDeps(s.env));assert.deepEqual(result.failures,['DISCORD_CHANNEL_1:CHANNEL_NOT_ALLOWED']);assert.equal(result.observed,0);
+   assert.equal(s.raw.prepare('SELECT COUNT(*) n FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+GOOD).n,0);
+  }else await assert.rejects(collectCloudDiscord(s.env,collectionDeps(s.env)),/FIXTURE_CURSOR_WRITE_FAILED/);
+  assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key='cloud_lease'").get().n,0);
+ }
+});
+test('maintenance without cloud-agent opt-in retains its existing rate-limit retry behavior',async t=>{
+ const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=BAD;s.env.LINE_CHANNEL_ID='';let reads=0;
+ const deps={configured:()=>true,discord:async()=>{reads++;throw Object.assign(Error(PRIVATE),{code:'DISCORD_RATE_LIMITED',retryAfterMs:45000});},events:{drain:async()=>({delivered:0})}};
+ await maintainCloud(s.env,deps);await maintainCloud(s.env,deps);
+ assert.equal(reads,2);assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'cloud_discord_backoff:*'").get().n,0);
+ assert.equal(JSON.parse(s.raw.prepare("SELECT value FROM bridge_runtime WHERE key='cloud_maintenance'").get().value).mode,'cloud_polling');
+});
+test('fast collection bounds all intake and enqueue authorization GETs without changing ordinary request timeout',async t=>{
+ const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=GOOD;
+ const seen=[];assert.equal(discordRequestTimeoutMs(s.env),12000);
+ const result=await collectCloudDiscord(s.env,{configured:()=>true,discord:async(env,path)=>{
+  seen.push(discordRequestTimeoutMs(env));return path==='/channels/'+GOOD?{id:GOOD,guild_id:G,type:0}:[{id:s.messageId,channel_id:GOOD,author:{id:OWNER}}];
+ },events:{enqueue:async env=>{seen.push(discordRequestTimeoutMs(env));}}});
+ assert.equal(result.observed,1);assert.equal(seen.length,3);assert.ok(seen.every(value=>value>0&&value<=2500));assert.equal(discordRequestTimeoutMs(s.env),12000);
+});
+test('candidate-read fast scope honors an earlier caller deadline and never extends an inherited deadline',()=>{
+ const original={},fast=cloudAgentDiscordEnv(original,{deadline_ms:Date.now()+40}),nested=cloudAgentDiscordEnv(fast,{deadline_ms:Date.now()+10000});
+ assert.ok(discordRequestTimeoutMs(fast)<=40);assert.ok(discordRequestTimeoutMs(nested)<=40);assert.equal(discordRequestTimeoutMs(original),12000);
+});
+test('fast collection stops before another page or channel when its overall twenty-second budget expires',async t=>{
+ const s=setup();t.after(()=>s.raw.close());const originalNow=Date.now;let now=originalNow(),reads=0,enqueued=0;
+ Date.now=()=>now;t.after(()=>{Date.now=originalNow;});
+ const result=await collectCloudDiscord(s.env,{configured:()=>true,discord:async(env,path)=>{
+  reads++;now+=21000;assert.equal(discordRequestTimeoutMs(env),1);return {id:BAD,guild_id:G,type:0};
+ },events:{enqueue:async()=>{enqueued++;}}});
+ assert.equal(reads,1);assert.equal(enqueued,0);assert.equal(result.observed,0);assert.deepEqual(result.failures,['DISCORD_CHANNEL_1:RECOVERY_CONTINUES_NEXT_TICK']);
+ assert.equal(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+BAD).value,s.previous);
+ assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key='cloud_lease'").get().n,0);
 });

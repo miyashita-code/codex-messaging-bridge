@@ -2,16 +2,28 @@ import {renewCloudLineToken} from './line-token.js';
 import {retryCloudLineReplies} from './line.js';
 import {pruneDeliveryDiagnostics} from './delivery-diagnostics.js';
 const ID=/^[0-9]{17,20}$/;
+const FAST_DISCORD_DEADLINE=Symbol('cloud-agent-discord-deadline');
+// The private overlay is propagated to authorization GETs inside enqueue too.
+// Ordinary MCP reads and maintenance retain their existing 12-second timeout.
+export function discordRequestTimeoutMs(env){const deadline=env?.[FAST_DISCORD_DEADLINE];return Number.isFinite(deadline)?Math.max(1,Math.min(2500,Math.floor(deadline-Date.now()))):12000;}
+export function cloudAgentDiscordEnv(env,{deadline_ms}={}){const deadline=Math.min(Date.now()+20000,Number.isFinite(deadline_ms)?deadline_ms:Infinity,Number.isFinite(env?.[FAST_DISCORD_DEADLINE])?env[FAST_DISCORD_DEADLINE]:Infinity);return Object.assign(Object.create(env),{[FAST_DISCORD_DEADLINE]:deadline});}
 const run=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).run();
 const first=(env,sql,...v)=>env.DB.prepare(sql).bind(...v).first();
 const DISCORD_FAILURES=new Set(['DISCORD_RATE_LIMITED','DISCORD_UNAVAILABLE','DISCORD_REDIRECT_DENIED','DISCORD_INVALID_RESPONSE','DM_NOT_ALLOWED','DM_RECIPIENT_MISMATCH','DM_SOURCE_MISMATCH','SOURCE_MISMATCH','GUILD_NOT_ALLOWED','CHANNEL_NOT_ALLOWED','DISCORD_CURSOR_STALLED']);
 const discordFailure=error=>{const code=error?.code||error?.message;return typeof code==='string'&&(DISCORD_FAILURES.has(code)||/^DISCORD_[45]\d\d$/.test(code))?code:null;};
 class ChannelFailure extends Error{}
+function discordRetryAfter(error){const value=Number(error?.retryAfterMs);return Number.isFinite(value)&&value>0?Math.min(Math.max(value,15000),86400000):15000;}
 async function readDiscord(discord,env,path){
  try{return await discord(env,path);}catch(error){
   // The HTTP dependency may throw a transport error containing a URL or secret.
   // Only fixed labels reach maintenance records, never arbitrary exception text.
-  throw new ChannelFailure(discordFailure(error)||'DISCORD_UNAVAILABLE');
+  const failure=new ChannelFailure(discordFailure(error)||'DISCORD_UNAVAILABLE');
+  if(failure.message==='DISCORD_RATE_LIMITED'){
+   // Carry only bounded retry timing, never arbitrary upstream details.
+   failure.retryAfterMs=discordRetryAfter(error);
+   failure.globalRateLimit=error?.globalRateLimit===true;
+  }
+  throw failure;
  }
 }
 const lineTokenFailure=error=>{const code=error?.code||error?.message;return typeof code==='string'&&(/^LINE_TOKEN_HTTP_[45]\d\d$/.test(code)||['LINE_TOKEN_OUTCOME_UNKNOWN','LINE_TOKEN_INVALID_RESPONSE','LINE_TOKEN_IDENTITY_MISMATCH','LINE_TOKEN_BOT_MISMATCH'].includes(code))?code:null;};
@@ -23,24 +35,41 @@ export async function cloudRuntimeStatus(env){
  const state=row?JSON.parse(row.value):{};
  return {...state,healthy:!!row&&Date.now()-row.updated_at<120000&&!state.failures?.length,last_tick_at:row?new Date(row.updated_at).toISOString():null,computer_independent_e2e_verified:false};
 }
-export async function maintainCloud(env,{discord,events,configured,source='unspecified'}){
+async function acquireCollectionLease(env){
  if(!env.DB)throw Error('PERSISTENCE_UNAVAILABLE');
  const nonce=crypto.randomUUID(),now=Date.now();
  const acquired=await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_lease',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at WHERE bridge_runtime.updated_at<?",nonce,now,now-120000);
- if(!acquired.meta?.changes)return {busy:true,...await cloudRuntimeStatus(env)};
- let observed=0;const failures=[];
- try{
+ return acquired.meta?.changes?nonce:null;
+}
+async function releaseCollectionLease(env,nonce){await run(env,"DELETE FROM bridge_runtime WHERE key='cloud_lease' AND value=?",nonce);}
+async function discordBackoffUntil(env,key){
+ const row=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',key);
+ if(!row)return 0;
+ const until=Number(row.value);
+ if(!Number.isFinite(until)||until<0)throw Error('INVALID_DISCORD_BACKOFF');
+ return until;
+}
+async function collectDiscordUnderLease(env,{discord,events,configured,source,fastBackoff=false}){
+ const now=Date.now();let observed=0;const failures=[];
+ if(fastBackoff)env=cloudAgentDiscordEnv(env,{deadline_ms:now+20000});
   if(configured(env)&&env.DISCORD_ENABLE_EVENTS==='true'){
    const since=Date.parse(env.DISCORD_CLOUD_SINCE||'');
    if(!Number.isFinite(since)||since<1420070400000)throw Error('DISCORD_START_TIME_REQUIRED');
    const initial=String(BigInt(since-1420070400000)<<22n);
    const channels=[...new Set((env.DISCORD_POLL_CHANNEL_IDS||'').split(',').filter(Boolean))];
    if(!channels.length||channels.length>10||channels.some(id=>!ID.test(id)))throw Error('DISCORD_CHANNELS_REQUIRED');
+   const globalBackoffKey='cloud_discord_backoff:global';
+   let globalBackoff=fastBackoff?await discordBackoffUntil(env,globalBackoffKey):0;
    for(const [index,id] of channels.entries()){
     // A channel ordinal identifies the failed configured entry without copying
     // private Discord IDs into the status or arbitrary upstream error bodies.
     const failure=code=>failures.push('DISCORD_CHANNEL_'+(index+1)+':'+code);
+    if(fastBackoff&&Date.now()-now>=20000){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
+    const backoffKey='cloud_discord_backoff:'+id;
     try{
+    if(fastBackoff){
+     if(globalBackoff>Date.now()||await discordBackoffUntil(env,backoffKey)>Date.now()){failure('DISCORD_RATE_LIMITED');continue;}
+    }
     const ch=await readDiscord(discord,env,'/channels/'+id);
     if(!ch||ch.id!==id)throw new ChannelFailure('SOURCE_MISMATCH');
     const dm=ch.type===1;
@@ -54,10 +83,11 @@ export async function maintainCloud(env,{discord,events,configured,source='unspe
     const saved=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',cursorKey);
     const cursor=saved?.value||initial;
     if(!ID.test(cursor))throw Error('INVALID_CURSOR');
-    let before,complete=false;const fresh=[];
+    let before,complete=false,budgetExpired=false;const fresh=[];
     // Paginate backwards to the persisted cursor before advancing it. Never
     // silently skip a busy channel's backlog by keeping only its newest page.
     for(let page=0;page<10;page++){
+     if(fastBackoff&&Date.now()-now>=20000){budgetExpired=true;break;}
      const rows=await readDiscord(discord,env,'/channels/'+id+'/messages?limit=100'+(before?'&before='+before:''));
      if(!Array.isArray(rows)||rows.some(m=>!m||!ID.test(m.id||'')||m.channel_id!==id))throw new ChannelFailure('SOURCE_MISMATCH');
      for(const m of rows)if(BigInt(m.id)>BigInt(cursor))fresh.push(m);
@@ -65,6 +95,7 @@ export async function maintainCloud(env,{discord,events,configured,source='unspe
      const oldest=rows.reduce((a,m)=>BigInt(m.id)<BigInt(a)?m.id:a,rows[0].id);
      if(oldest===before)throw new ChannelFailure('DISCORD_CURSOR_STALLED');before=oldest;
     }
+    if(budgetExpired){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
     if(!complete){failure('DISCORD_BACKLOG_LIMIT');continue;}
     fresh.sort((a,b)=>BigInt(a.id)<BigInt(b.id)?-1:1);
     for(const m of fresh){
@@ -79,10 +110,34 @@ export async function maintainCloud(env,{discord,events,configured,source='unspe
      // Cursor writes, event persistence, invalid saved cursors and global
      // configuration faults remain fatal; they must never look like a good tick.
      if(!code)throw error;
+     if(fastBackoff&&code==='DISCORD_RATE_LIMITED'){
+      const until=Date.now()+discordRetryAfter(error);
+      if(error.globalRateLimit)globalBackoff=until;
+      await run(env,'INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',error.globalRateLimit?globalBackoffKey:backoffKey,String(until),Date.now());
+     }
      failure(code);
     }
    }
   }
+ return {observed,failures,degraded:failures.length>0,discord_configured:configured(env),mode:'cloud_collection',source};
+}
+// This intake-only entry point deliberately never renews LINE credentials,
+// drains callbacks, retries replies, or invokes a model. Use the same durable
+// cursor/lease as maintenance so cloud-agent waits cannot race another collector.
+export async function collectCloudDiscord(env,{discord,events,configured,source='cloud_agent'}){
+ const nonce=await acquireCollectionLease(env);
+ if(!nonce)return {busy:true,observed:0,source};
+ try{
+  const result=await collectDiscordUnderLease(env,{discord,events,configured,source,fastBackoff:true});
+  await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_discord_collection',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",JSON.stringify(result),Date.now());
+  return result;
+ }finally{await releaseCollectionLease(env,nonce);}
+}
+export async function maintainCloud(env,{discord,events,configured,source='unspecified'}){
+ const nonce=await acquireCollectionLease(env);
+ if(!nonce)return {busy:true,...await cloudRuntimeStatus(env)};
+ try{
+  const {observed,failures}=await collectDiscordUnderLease(env,{discord,events,configured,source,fastBackoff:env.CLOUD_AGENT_ENABLED==='true'});
   let tokenRenewal;
   try{tokenRenewal=await renewCloudLineToken(env);if(tokenRenewal.requires_review)failures.push('LINE_TOKEN_REVIEW_REQUIRED');}
   catch(error){const code=lineTokenFailure(error);if(!code)throw error;failures.push(code);tokenRenewal={configured:true,renewed:false,requires_review:true,reason:code};}
@@ -97,7 +152,7 @@ export async function maintainCloud(env,{discord,events,configured,source='unspe
   if(source==='mcp')await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_mcp_maintenance',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",JSON.stringify(result),Date.now());
   await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_maintenance',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",JSON.stringify(result),Date.now());
   return result;
- }finally{await run(env,"DELETE FROM bridge_runtime WHERE key='cloud_lease' AND value=?",nonce);}
+ }finally{await releaseCollectionLease(env,nonce);}
 }
 export function cloudRuntimePage(nonce){
  return `<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ともにゃ クラウド受信</title><style>body{font:17px/1.7 system-ui;max-width:760px;margin:50px auto;padding:24px;background:#f5f7fb;color:#17202a}pre{white-space:pre-wrap;background:white;padding:20px;border-radius:12px}button{font:inherit;padding:12px 20px}</style><h1>ともにゃ クラウド受信</h1><p>この画面をdotのcloud browserで開くと、15秒ごとにDiscordの新着と未配信通知を回収します。LINEの受信口は、この画面が閉じてもクラウドで受信・保存します。</p><p>画面を閉じると高速回収は停止します。クラウドの復旧スケジュールは別途設定が必要です。</p><p><a href="/runtime/inbox">本人用LINE受信箱</a></p><button id="retry">今すぐ回収</button><p id="status" role="status">接続しています…</p><pre id="result">未実行</pre><script nonce="${nonce}">
