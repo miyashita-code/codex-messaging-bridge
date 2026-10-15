@@ -1,5 +1,5 @@
 // Official MCP Events webhook delivery. No alternate model or private session API.
-import {discordGuildProfile,discordGuildEnv,discordPrimaryGuildId,discordGuildActivation} from './discord-guilds.js';
+import {discordGuildProfile,discordGuildEnv,discordPrimaryGuildId,discordChannelActivation} from './discord-guilds.js';
 const VERSION='2026-07-28';
 const EVENT_NAME='discord.message.created';
 const DM_EVENT_NAME='discord.dm.message.created';
@@ -194,8 +194,8 @@ export function eventService(deps){
    try{
     checkEvents(env,item.name);
     const data=JSON.parse(item.data_json),sourceEnv=item.name===LINE_EVENT_NAME?env:eventGuildEnv(env,data.guild_id,item.name);
-    const {m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(sourceEnv,{channel_id:data.channel_id,message_id:data.message_id});
-    if(item.name===EVENT_NAME&&data.guild_id!==discordPrimaryGuildId(env)&&Date.parse(m.timestamp)<(await discordGuildActivation(env,data.guild_id)).since_ms)invalid('SOURCE_MISMATCH');
+    const {ch,m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(sourceEnv,{channel_id:data.channel_id,message_id:data.message_id});
+    if(item.name===EVENT_NAME&&data.guild_id!==discordPrimaryGuildId(env)&&Date.parse(m.timestamp)<(await discordChannelActivation(env,data.guild_id,ch.id,{...([10,11].includes(ch.type)&&ch.parent_id?{parent_id:ch.parent_id}:{})})).since_ms)invalid('SOURCE_MISMATCH');
     if(item.name!==LINE_EVENT_NAME&&m.author.id!==data.author_id)invalid('SOURCE_MISMATCH');
     if(item.name===DM_EVENT_NAME&&await honorDmStop(env,m)){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
     if(item.name===DM_EVENT_NAME){const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',data.author_id);if(pref?.blocked&&Date.parse(item.occurred_at)<=pref.updated_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}}

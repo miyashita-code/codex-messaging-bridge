@@ -1,8 +1,9 @@
 import {renewCloudLineToken} from './line-token.js';
 import {retryCloudLineReplies} from './line.js';
 import {pruneDeliveryDiagnostics} from './delivery-diagnostics.js';
-import {discordGuildProfiles,discordGuildProfile,discordGuildEnv,discordGuildActivation} from './discord-guilds.js';
+import {discordGuildProfiles,discordGuildProfile,discordGuildEnv,discordGuildActivation,discordChannelActivation,DISCORD_MAX_CHANNELS_PER_GUILD} from './discord-guilds.js';
 const ID=/^[0-9]{17,20}$/;
+const cursorValue=value=>typeof value==='string'&&/^(0|[1-9][0-9]{0,19})$/.test(value)&&BigInt(value)<=18446744073709551615n;
 const FAST_DISCORD_DEADLINE=Symbol('cloud-agent-discord-deadline');
 // The private overlay is propagated to authorization GETs inside enqueue too.
 // Ordinary MCP reads and maintenance retain their existing 12-second timeout.
@@ -50,10 +51,12 @@ async function discordBackoffUntil(env,key){
  if(!Number.isFinite(until)||until<0)throw Error('INVALID_DISCORD_BACKOFF');
  return until;
 }
-function currentCollectionProfile(env,guildId,ch){
+const publicThread=(profile,ch)=>!!ch&&[10,11].includes(ch.type)&&ch.guild_id===profile.guild_id&&ID.test(ch.id||'')&&ID.test(ch.parent_id||'')&&ch.thread_metadata?.archived!==true&&profile.poll_channel_ids.includes(ch.parent_id)&&(!profile.allowed_channel_ids.length||profile.allowed_channel_ids.includes(ch.parent_id));
+function currentCollectionProfile(env,guildId,ch,parentId){
  const profile=discordGuildProfile(env,guildId);
  if(!profile)throw new ChannelFailure('GUILD_NOT_ALLOWED');
- if(!profile.poll_channel_ids.includes(ch.id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
+ if(parentId!==undefined){if(ch.parent_id!==parentId||!publicThread(profile,ch))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');}
+ else if(!profile.poll_channel_ids.includes(ch.id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
  if(ch.type===1){if(!profile.is_primary)throw new ChannelFailure('DM_CHANNEL_NOT_ALLOWED');}
  else{
   if(ch.guild_id!==profile.guild_id)throw new ChannelFailure('GUILD_NOT_ALLOWED');
@@ -69,55 +72,75 @@ async function collectDiscordUnderLease(env,{discord,events,configured,source,fa
    // primary-only maintenance path retains its previous retry behavior.
    fastBackoff=fastBackoff||multi;
    if(fastBackoff)env=cloudAgentDiscordEnv(baseEnv,{deadline_ms:now+20000});
+   const rotation=await first(env,"SELECT value FROM bridge_runtime WHERE key='cloud_discord_round_robin'");
+   const ordinal=rotation?Number(rotation.value):0;if(!Number.isSafeInteger(ordinal)||ordinal<0)throw Error('INVALID_DISCORD_ROUND_ROBIN');
+   const globalBackoffKey='cloud_discord_backoff:global';
+   let globalBackoff=fastBackoff?await discordBackoffUntil(env,globalBackoffKey):0;
    const groups=[];
-   for(const [guildIndex,profile] of profiles.entries()){
+   // Reserve the rest of the twenty-second tick for existing channels/DMs:
+   // discovery gets at most four seconds total and two seconds per HTTP call.
+   // Rotate its guild order too, so a failing guild cannot hide later threads.
+   const profileOrder=profiles.map((profile,guildIndex)=>({profile,guildIndex}));profileOrder.push(...profileOrder.splice(0,ordinal%profileOrder.length));
+   for(const {guildIndex,profile} of profileOrder){
     if(!Number.isSafeInteger(profile.since_ms)||profile.since_ms<1420070400000)throw Error('DISCORD_START_TIME_REQUIRED');
     const channels=[...new Set(profile.poll_channel_ids)];
-    if(!channels.length||channels.length>10||channels.some(id=>!ID.test(id)))throw Error('DISCORD_CHANNELS_REQUIRED');
+    if(!channels.length||channels.length>(profile.is_primary?10:DISCORD_MAX_CHANNELS_PER_GUILD)||channels.some(id=>!ID.test(id)))throw Error('DISCORD_CHANNELS_REQUIRED');
     const activation=await discordGuildActivation(baseEnv,profile.guild_id),since=activation.since_ms;
-    if(!profile.is_primary){
-     // Seed all channels before a slow guild consumes the tick. Initial channels
-     // honor the reviewed activation; later-added channels start when observed.
-     // Empty channels retain the boundary rather than resetting on every tick.
-     for(const id of channels){
-      const start=String(BigInt((activation.initial_channel_ids.includes(id)?since:Math.max(since,now))-1420070400000)<<22n);
-      await run(env,'INSERT OR IGNORE INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)','cloud_cursor:'+profile.guild_id+':'+id,start,now);
+    const entries=channels.map(id=>({id}));
+    if(channels.some(id=>!profile.allowed_channel_ids.length||profile.allowed_channel_ids.includes(id))){
+     const failure=code=>failures.push((multi?'DISCORD_GUILD_'+(guildIndex+1)+'_':'DISCORD_')+'PUBLIC_THREADS:'+code),key='cloud_discord_backoff:threads:'+profile.guild_id;
+     try{
+      if(Date.now()-now>=4000)throw new ChannelFailure('RECOVERY_CONTINUES_NEXT_TICK');
+      if(globalBackoff>Date.now()||await discordBackoffUntil(env,key)>Date.now())throw new ChannelFailure('DISCORD_RATE_LIMITED');
+      const scoped=discordGuildEnv(cloudAgentDiscordEnv(env,{deadline_ms:Math.min(now+4000,Date.now()+2000)}),profile.guild_id),result=await readDiscord(discord,scoped,'/guilds/'+profile.guild_id+'/threads/active');
+      if(!result||!Array.isArray(result.threads))throw new ChannelFailure('DISCORD_INVALID_RESPONSE');
+      const latest=discordGuildProfile(baseEnv,profile.guild_id);if(!latest)throw new ChannelFailure('GUILD_NOT_ALLOWED');
+      const threads=[...new Map(result.threads.filter(ch=>publicThread(latest,ch)&&!channels.includes(ch.id)).map(ch=>[ch.id,ch])).values()].sort((a,b)=>a.id.localeCompare(b.id));
+      const rotated=threads.slice(ordinal%Math.max(1,threads.length)).concat(threads.slice(0,ordinal%Math.max(1,threads.length)));
+      for(const ch of rotated.slice(0,DISCORD_MAX_CHANNELS_PER_GUILD))entries.push({id:ch.id,parent_id:ch.parent_id});
+      if(threads.length>DISCORD_MAX_CHANNELS_PER_GUILD)failure('RECOVERY_CONTINUES_NEXT_TICK');
+     }catch(error){
+      const code=error instanceof ChannelFailure?error.message:discordFailure(error);if(!code)throw error;
+      if(code==='DISCORD_RATE_LIMITED'&&error.retryAfterMs){const until=Date.now()+discordRetryAfter(error);if(error.globalRateLimit)globalBackoff=until;await run(env,'INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',error.globalRateLimit?globalBackoffKey:key,String(until),Date.now());}
+      failure(code);
      }
     }
-    groups.push({profile,guildIndex,since,channels});
+    // Persist a new channel/thread boundary before a slow earlier source uses
+    // the tick budget. Reviewed parent activation is inherited by public threads.
+    for(const entry of entries){
+     const boundary=await discordChannelActivation(baseEnv,profile.guild_id,entry.id,{...(entry.parent_id?{parent_id:entry.parent_id}:{})});entry.since=boundary.since_ms;
+     if(!profile.is_primary){const start=String(BigInt(entry.since-1420070400000)<<22n);await run(env,'INSERT OR IGNORE INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)','cloud_cursor:'+profile.guild_id+':'+entry.id,start,now);}
+    }
+    groups.push({profile,guildIndex,since,channels:entries});
    }
-   let ordinal=0;
-   if(multi){
-    const saved=await first(env,"SELECT value FROM bridge_runtime WHERE key='cloud_discord_round_robin'");ordinal=saved?Number(saved.value):0;
-    if(!Number.isSafeInteger(ordinal)||ordinal<0)throw Error('INVALID_DISCORD_ROUND_ROBIN');
+   groups.sort((a,b)=>a.guildIndex-b.guildIndex);
+   const rotating=multi||groups.some(group=>group.channels.some(entry=>entry.parent_id));
+   if(rotating){
     await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_discord_round_robin',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",String((ordinal+1)%1000000),Date.now());
    }
    const tasks=[];
-   for(let index=0;index<10;index++)for(const group of groups)if(index<group.channels.length)tasks.push({...group,index,id:group.channels[index]});
+   for(let index=0;index<DISCORD_MAX_CHANNELS_PER_GUILD*2;index++)for(const group of groups)if(index<group.channels.length)tasks.push({...group,index,...group.channels[index]});
    // Rotate the flattened, guild-interleaved list, so every channel eventually
    // goes first even when another channel consumes the complete tick budget.
-   if(multi)tasks.push(...tasks.splice(0,ordinal%tasks.length));
-   const globalBackoffKey='cloud_discord_backoff:global';
-   let globalBackoff=fastBackoff?await discordBackoffUntil(env,globalBackoffKey):0;
-   for(const {profile,guildIndex,since,index,id} of tasks){
+   if(rotating)tasks.push(...tasks.splice(0,ordinal%tasks.length));
+   for(const {profile,guildIndex,since,index,id,parent_id:parentId} of tasks){
     // A channel ordinal identifies the failed configured entry without copying
     // private Discord IDs into the status or arbitrary upstream error bodies.
     const failure=code=>failures.push((multi?'DISCORD_GUILD_'+(guildIndex+1)+'_':'DISCORD_')+'CHANNEL_'+(index+1)+':'+code);
     if(fastBackoff&&Date.now()-now>=20000){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
     const backoffKey='cloud_discord_backoff:'+id;
     try{
-    if(fastBackoff){
-     if(globalBackoff>Date.now()||await discordBackoffUntil(env,backoffKey)>Date.now()){failure('DISCORD_RATE_LIMITED');continue;}
-    }
+    if(globalBackoff>Date.now()||fastBackoff&&await discordBackoffUntil(env,backoffKey)>Date.now()){failure('DISCORD_RATE_LIMITED');continue;}
     // Refresh the live profile before metadata and every body fetch. A revoked
     // channel may not be read merely because it is still in a saved poll list.
     const latestProfile=discordGuildProfile(baseEnv,profile.guild_id);
     if(!latestProfile)throw new ChannelFailure('GUILD_NOT_ALLOWED');
-    if(!latestProfile.poll_channel_ids.includes(id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
+    if(parentId!==undefined){if(!latestProfile.poll_channel_ids.includes(parentId)||latestProfile.allowed_channel_ids.length&&!latestProfile.allowed_channel_ids.includes(parentId))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');}
+    else if(!latestProfile.poll_channel_ids.includes(id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
     let scoped=discordGuildEnv(env,profile.guild_id);
     const ch=await readDiscord(discord,scoped,'/channels/'+id);
     if(!ch||ch.id!==id)throw new ChannelFailure('SOURCE_MISMATCH');
-    currentCollectionProfile(baseEnv,profile.guild_id,ch);
+    currentCollectionProfile(baseEnv,profile.guild_id,ch,parentId);
     const dm=ch.type===1;
     if(dm){
      const owner=baseEnv.DISCORD_OWNER_USER_ID;
@@ -125,18 +148,20 @@ async function collectDiscordUnderLease(env,{discord,events,configured,source,fa
      if(ch.recipients?.length!==1||ch.recipients[0].id!==owner)throw new ChannelFailure('DM_RECIPIENT_MISMATCH');
      await run(env,"INSERT OR IGNORE INTO dm_contacts (channel_id,user_id,guild_id,owner_site_id,source_channel_id,source_message_id,delivery_status,authorized_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?)",id,owner,profile.guild_id,env.BRIDGE_OWNER_SITE_ID,id,'cloud-owner',since,Date.now());
     }
+    // Forum/media parents hold public threads, not message history themselves.
+    if([15,16].includes(ch.type))continue;
     const cursorKey='cloud_cursor:'+(profile.is_primary?'':profile.guild_id+':')+id;
     const initial=String(BigInt(since-1420070400000)<<22n);
     const saved=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',cursorKey);
     let cursor=saved?.value||initial;
-    if(!ID.test(cursor))throw Error('INVALID_CURSOR');
+    if(!cursorValue(cursor))throw Error('INVALID_CURSOR');
     if(!profile.is_primary&&BigInt(cursor)<BigInt(initial))cursor=initial;
     let before,complete=false,budgetExpired=false;const fresh=[];
     // Paginate backwards to the persisted cursor before advancing it. Never
     // silently skip a busy channel's backlog by keeping only its newest page.
     for(let page=0;page<10;page++){
      if(fastBackoff&&Date.now()-now>=20000){budgetExpired=true;break;}
-     currentCollectionProfile(baseEnv,profile.guild_id,ch);scoped=discordGuildEnv(env,profile.guild_id);
+     currentCollectionProfile(baseEnv,profile.guild_id,ch,parentId);scoped=discordGuildEnv(env,profile.guild_id);
      const rows=await readDiscord(discord,scoped,'/channels/'+id+'/messages?limit=100'+(before?'&before='+before:''));
      if(!Array.isArray(rows)||rows.some(m=>!m||!ID.test(m.id||'')||m.channel_id!==id))throw new ChannelFailure('SOURCE_MISMATCH');
      for(const m of rows)if(BigInt(m.id)>BigInt(cursor))fresh.push(m);
@@ -150,7 +175,7 @@ async function collectDiscordUnderLease(env,{discord,events,configured,source,fa
     for(const m of fresh){
      if(Date.now()-now>20000){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
      if(!m.author?.bot&&!m.webhook_id&&m.author?.id!==env.DISCORD_BOT_ID&&(!dm||m.author.id===env.DISCORD_OWNER_USER_ID)){
-      currentCollectionProfile(baseEnv,profile.guild_id,ch);scoped=discordGuildEnv(env,profile.guild_id);
+      currentCollectionProfile(baseEnv,profile.guild_id,ch,parentId);scoped=discordGuildEnv(env,profile.guild_id);
       await events.enqueue(scoped,{guild_id:profile.guild_id,channel_id:id,message_id:m.id,...(dm?{scope:'dm'}:{})});observed++;
      }
      await run(env,'INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',cursorKey,m.id,Date.now());

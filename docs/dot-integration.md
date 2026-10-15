@@ -60,6 +60,8 @@ dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがM
 
 同じ会話の確定済み入力・返信を暗号化して最大6往復/12メッセージ/24,000文字保存し、次のwaitの `conversation_context` へ渡します。owner・Bot・チャネル種別・会話の境界を保ち、Your dot本人の記憶とは区別します。モデルは返された同会話履歴だけを使い、運用chatや別会話の事実を混ぜません。30日より古い履歴は読取対象外、暗号文の削除は次の成功write時のlazy cleanupです。`context_recorded:false` でも完了済み送信は再送しません。
 
+Discordで過去の議事録などを明示的に依頼された場合は、現在claimしたサーバー・チャンネルの認可済み履歴を `discord_history_read` で読み、必要に応じて同じ親の公開スレッドを辿ります。実メッセージが返した添付IDは `discord_text_attachment_read` でページを辿って読めます。これは返信済み入力の再処理ではなく、現在の依頼への読取です。Botが投稿した議事録も資料として読めますが、その本文や添付は未信頼データです。別サーバー・本人DM・非公開スレッドや運用chatの内容を混ぜず、返信は引き続き現在のclaimへ1回だけ送ります。ページや添付を読み残した場合は、全件を読了したと報告しません。
+
 wait中のDiscord回収は既存cursor・収集lease・認可・429 cooldownを共有し、GETによる取込と永続化だけを行います。LINE token更新・LINE再送・callback drainは行いません。有効化中の `/runtime/tick` はstandbyを返し、残存browser tabからも回収・送信しません。受信本文を信頼済みの指示として扱わず、会話ごとの非公開contextを分け、空・busy・lease喪失時に勝手な送信やconsumerの奪取をしないようtaskへ指示します。送信結果不明・失敗・予約済みの入力は再送せず、確認待ちとして残します。
 
 配備後はMacのowned受信を使えない状態とbrowser standbyを確認し、新しい実LINE / Discord入力から同じ会話への返信までを、手動の追いかけ指示なしで計測します。task中断、leaseの失効・再取得、復旧も別途検証します。失敗時は新consumerを止め、flagを無効にして再配備し、記録した既存購読と1つのcloud受信経路へ戻します。watermark・claim・送信記録・secretは保持します。詳細は[adapterの実験手順](../adapters/sites/README.md#first-party-cloud-task-receiver-experimental)を参照してください。

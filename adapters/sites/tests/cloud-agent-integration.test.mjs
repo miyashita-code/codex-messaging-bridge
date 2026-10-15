@@ -32,6 +32,7 @@ function setup(t,{enabled=true,discord=false}={}){
  });
  env.FETCH=async(url,options={})=>{
   const path=new URL(url).pathname.replace(/^\/api\/v10/,'');
+  if(path==='/guilds/'+GUILD+'/threads/active')return Response.json({threads:[]});
   if(path==='/channels/'+CHANNEL)return Response.json({id:CHANNEL,guild_id:GUILD,type:0});
   if(path==='/channels/'+DM)return Response.json({id:DM,type:1,recipients:[{id:AUTHOR}]});
   const route=/^\/channels\/(\d+)\/messages(?:\/(\d+))?$/.exec(path);

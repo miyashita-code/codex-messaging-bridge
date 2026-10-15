@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {discordGuildProfiles,discordGuildProfile,discordGuildEnv,discordGuildScope,discordPrimaryGuildId,discordGuildActivation,DiscordGuildConfigError} from '../worker/discord-guilds.js';
+import {discordGuildProfiles,discordGuildProfile,discordGuildEnv,discordGuildScope,discordPrimaryGuildId,discordGuildActivation,discordChannelActivation,DISCORD_MAX_CHANNELS_PER_GUILD,DiscordGuildConfigError} from '../worker/discord-guilds.js';
 const G1='100000000000000001',G2='100000000000000002',C1='200000000000000001',C2='200000000000000002',C3='200000000000000003';
 const profile=(extra={})=>({guild_id:G2,label:'Team fixture',allowed_channel_ids:[C2],poll_channel_ids:[C2],since:'2026-10-15T00:00:00.000Z',...extra});
 const setup=(extra={})=>({BRIDGE_OWNER_SITE_ID:'owner-fixture',DISCORD_GUILD_ID:G1,DISCORD_ALLOWED_CHANNEL_IDS:C1,DISCORD_POLL_CHANNEL_IDS:C1,DISCORD_CLOUD_SINCE:'2026-10-14T00:00:00.000Z',...extra});
@@ -36,4 +36,43 @@ test('concurrent initialization cannot lose the activation fence and corrupt jou
  const env=setup({DISCORD_GUILDS_JSON:JSON.stringify([profile()])}),raw=database(t,env);
  const all=await Promise.all(Array.from({length:6},()=>discordGuildActivation(env,G2)));assert.ok(all.every(value=>value.since_ms===all[0].since_ms));assert.equal(raw.prepare('SELECT COUNT(*) n FROM bridge_runtime').get().n,1);
  raw.prepare('UPDATE bridge_runtime SET value=?').run('{"version":1}');await assert.rejects(discordGuildActivation(env,G2),e=>e.code==='DISCORD_GUILD_STATE_UNAVAILABLE');
+});
+
+test('reviewed channel start maps accept only explicit polling channels and strict timestamps with a bounded channel set',()=>{
+ const channels=Array.from({length:50},(_,n)=>String(BigInt(C2)+BigInt(n))),start='2026-10-15T01:00:00Z';
+ const env=setup({DISCORD_GUILDS_JSON:JSON.stringify([profile({allowed_channel_ids:channels,poll_channel_ids:channels,channel_since:{[C2]:start}})])});
+ assert.equal(DISCORD_MAX_CHANNELS_PER_GUILD,50);assert.equal(discordGuildProfile(env,G2).channel_since_ms[C2],Date.parse(start));
+ const cases=[null,[],{[C3]:start},{[C2]:'2026-10-15'},{[C2]:'2026-02-30T00:00:00Z'},{[C2]:Date.parse(start)}];
+ for(const channel_since of cases){env.DISCORD_GUILDS_JSON=JSON.stringify([profile({channel_since})]);assert.throws(()=>discordGuildProfiles(env),DiscordGuildConfigError);}
+ channels.push(String(BigInt(C2)+50n));env.DISCORD_GUILDS_JSON=JSON.stringify([profile({allowed_channel_ids:channels,poll_channel_ids:channels})]);assert.throws(()=>discordGuildProfiles(env),DiscordGuildConfigError);
+});
+
+test('added channels and public children inherit reviewed starts without rewinding an activation journal',async t=>{
+ const env=setup({DISCORD_GUILDS_JSON:JSON.stringify([profile()])});database(t,env);await discordGuildActivation(env,G2);
+ const thread='200000000000000012',start='2026-10-15T01:00:00Z',later='2026-10-15T02:00:00Z';
+ const added=extra=>profile({allowed_channel_ids:[C2,C3],poll_channel_ids:[C2,C3],channel_since:{[C3]:start},...extra});
+ env.DISCORD_GUILDS_JSON=JSON.stringify([added()]);
+ assert.equal((await discordChannelActivation(env,G2,C3)).since_ms,Date.parse(start));
+ assert.equal((await discordChannelActivation(env,G2,thread,{parent_id:C3})).since_ms,Date.parse(start));
+ env.DISCORD_GUILDS_JSON=JSON.stringify([added({channel_since:{[C3]:later}})]);
+ assert.equal((await discordChannelActivation(env,G2,C3)).since_ms,Date.parse(later));assert.equal((await discordChannelActivation(env,G2,thread,{parent_id:C3})).since_ms,Date.parse(later));
+ env.DISCORD_GUILDS_JSON=JSON.stringify([added()]);assert.equal((await discordChannelActivation(env,G2,C3)).since_ms,Date.parse(later));assert.equal((await discordChannelActivation(env,G2,thread,{parent_id:C3})).since_ms,Date.parse(later));
+ env.DISCORD_GUILDS_JSON=JSON.stringify([profile()]);await assert.rejects(discordChannelActivation(env,G2,thread,{parent_id:C3}),e=>e.code==='CHANNEL_NOT_ALLOWED');
+});
+
+test('unreviewed new channels start at first observation while existing cursors retain their previous floor',async t=>{
+ const env=setup({DISCORD_GUILDS_JSON:JSON.stringify([profile()])}),raw=database(t,env);await discordGuildActivation(env,G2);
+ env.DISCORD_GUILDS_JSON=JSON.stringify([profile({allowed_channel_ids:[C2,C3],poll_channel_ids:[C2,C3]})]);
+ const before=Date.now(),first=await discordChannelActivation(env,G2,C3),after=Date.now();assert.ok(first.since_ms>=before&&first.since_ms<=after);assert.equal((await discordChannelActivation({...env},G2,C3)).since_ms,first.since_ms);
+ const child='200000000000000012';raw.prepare('INSERT INTO bridge_runtime VALUES(?,?,?)').run('cloud_cursor:'+G2+':'+child,'500000000000000001',Date.now());
+ assert.equal((await discordChannelActivation(env,G2,child,{parent_id:C2})).since_ms,Date.parse(profile().since));assert.equal(raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get('cloud_cursor:'+G2+':'+child).value,'500000000000000001');
+});
+
+test('channel activation accepts early-epoch cursor sentinels but rejects corrupt or overflowing cursor state',async t=>{
+ const env=setup({DISCORD_GUILDS_JSON:JSON.stringify([profile({since:'2015-01-01T00:00:00Z'})])}),raw=database(t,env);await discordGuildActivation(env,G2);
+ env.DISCORD_GUILDS_JSON=JSON.stringify([profile({allowed_channel_ids:[C2,C3],poll_channel_ids:[C2,C3],since:'2015-01-01T00:00:00Z'})]);
+ const key='cloud_cursor:'+G2+':'+C3;raw.prepare('INSERT INTO bridge_runtime VALUES(?,?,?)').run(key,'0',Date.now());assert.equal((await discordChannelActivation(env,G2,C3)).since_ms,1420070400000);
+ raw.prepare("DELETE FROM bridge_runtime WHERE key LIKE 'cloud_channel_activation:%'").run();
+ for(const value of ['-1','1.5','18446744073709551616','00']){raw.prepare('UPDATE bridge_runtime SET value=? WHERE key=?').run(value,key);await assert.rejects(discordChannelActivation(env,G2,C3),e=>e.code==='DISCORD_GUILD_STATE_UNAVAILABLE');}
+ raw.prepare('UPDATE bridge_runtime SET value=? WHERE key=?').run('0',key);await discordChannelActivation(env,G2,C3);raw.prepare("UPDATE bridge_runtime SET value=? WHERE key LIKE 'cloud_channel_activation:%'").run('{"version":1}');await assert.rejects(discordChannelActivation(env,G2,C3),e=>e.code==='DISCORD_GUILD_STATE_UNAVAILABLE');
 });

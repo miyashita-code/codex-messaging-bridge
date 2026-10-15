@@ -20,6 +20,7 @@ function setup(){
  env.LINE_TOKEN_FETCH=async url=>{const path=new URL(url).pathname;renewals.push(path);return Response.json(path==='/v2/oauth/accessToken'?{access_token:'fixture-renewed-token-with-length',expires_in:2592000}:path==='/v2/oauth/verify'?{client_id:env.LINE_CHANNEL_ID,expires_in:2592000}:{userId:LINE_BOT});};
  env.FETCH=async url=>{
   const path=new URL(url).pathname.replace(/^\/api\/v10/,'');
+  if(path==='/guilds/'+G+'/threads/active')return Response.json({threads:[]});
   if(path==='/channels/'+GOOD)return Response.json({id:GOOD,guild_id:G,type:0});
   if(path==='/channels/'+BAD)return Response.json({id:BAD,guild_id:G,type:0});
   if(path==='/channels/'+GOOD+'/messages')return Response.json([message]);
@@ -98,7 +99,7 @@ test('an ambiguous LINE token issuance is reported as degraded while callbacks a
 test('unknown Discord transport details are replaced with a fixed channel failure label',async()=>{
  const s=setup();s.env.LINE_CHANNEL_ID='';
  const result=await maintainCloud(s.env,{configured:()=>true,discord:async()=>{throw Error(PRIVATE);},events:{drain:async()=>({delivered:1})}});
- assert.deepEqual(result.failures,['DISCORD_CHANNEL_1:DISCORD_UNAVAILABLE','DISCORD_CHANNEL_2:DISCORD_UNAVAILABLE']);assert.equal(result.delivered,1);assert.ok(!JSON.stringify(result).includes(PRIVATE));
+ assert.deepEqual(result.failures,['DISCORD_PUBLIC_THREADS:DISCORD_UNAVAILABLE','DISCORD_CHANNEL_1:DISCORD_UNAVAILABLE','DISCORD_CHANNEL_2:DISCORD_UNAVAILABLE']);assert.equal(result.delivered,1);assert.ok(!JSON.stringify(result).includes(PRIVATE));
 });
 
 test('a cursor persistence failure is fatal and still releases the maintenance lease',async()=>{
@@ -174,7 +175,7 @@ test('fast collection respects global Discord cooldown and defaults unknown retr
   const before=Date.now(),result=await collectCloudDiscord(s.env,deps);
   const key=global?'cloud_discord_backoff:global':'cloud_discord_backoff:'+BAD;
   assert.ok(Number(s.raw.prepare('SELECT value FROM bridge_runtime WHERE key=?').get(key).value)>=before+15000);
-  if(global){assert.equal(reads,1);assert.equal(result.observed,0);await collectCloudDiscord(s.env,deps);assert.equal(reads,1);}
+  if(global){assert.equal(reads,2);assert.equal(result.observed,0);await collectCloudDiscord(s.env,deps);assert.equal(reads,2);}
   else assert.equal(result.observed,1);
  }
 });
@@ -192,7 +193,7 @@ test('collection always rechecks current Discord authorization and releases its 
 });
 test('maintenance without cloud-agent opt-in retains its existing rate-limit retry behavior',async t=>{
  const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=BAD;s.env.LINE_CHANNEL_ID='';let reads=0;
- const deps={configured:()=>true,discord:async()=>{reads++;throw Object.assign(Error(PRIVATE),{code:'DISCORD_RATE_LIMITED',retryAfterMs:45000});},events:{drain:async()=>({delivered:0})}};
+ const deps={configured:()=>true,discord:async(_env,path)=>{if(path.startsWith('/guilds/'))return{threads:[]};reads++;throw Object.assign(Error(PRIVATE),{code:'DISCORD_RATE_LIMITED',retryAfterMs:45000});},events:{drain:async()=>({delivered:0})}};
  await maintainCloud(s.env,deps);await maintainCloud(s.env,deps);
  assert.equal(reads,2);assert.equal(s.raw.prepare("SELECT COUNT(*) n FROM bridge_runtime WHERE key GLOB 'cloud_discord_backoff:*'").get().n,0);
  assert.equal(JSON.parse(s.raw.prepare("SELECT value FROM bridge_runtime WHERE key='cloud_maintenance'").get().value).mode,'cloud_polling');
@@ -201,9 +202,9 @@ test('fast collection bounds all intake and enqueue authorization GETs without c
  const s=setup();t.after(()=>s.raw.close());s.env.DISCORD_POLL_CHANNEL_IDS=GOOD;
  const seen=[];assert.equal(discordRequestTimeoutMs(s.env),12000);
  const result=await collectCloudDiscord(s.env,{configured:()=>true,discord:async(env,path)=>{
-  seen.push(discordRequestTimeoutMs(env));return path==='/channels/'+GOOD?{id:GOOD,guild_id:G,type:0}:[{id:s.messageId,channel_id:GOOD,author:{id:OWNER}}];
+  seen.push(discordRequestTimeoutMs(env));return path==='/guilds/'+G+'/threads/active'?{threads:[]}:path==='/channels/'+GOOD?{id:GOOD,guild_id:G,type:0}:[{id:s.messageId,channel_id:GOOD,author:{id:OWNER}}];
  },events:{enqueue:async env=>{seen.push(discordRequestTimeoutMs(env));}}});
- assert.equal(result.observed,1);assert.equal(seen.length,3);assert.ok(seen.every(value=>value>0&&value<=2500));assert.equal(discordRequestTimeoutMs(s.env),12000);
+ assert.equal(result.observed,1);assert.equal(seen.length,4);assert.ok(seen.every(value=>value>0&&value<=2500));assert.equal(discordRequestTimeoutMs(s.env),12000);
 });
 test('candidate-read fast scope honors an earlier caller deadline and never extends an inherited deadline',()=>{
  const original={},fast=cloudAgentDiscordEnv(original,{deadline_ms:Date.now()+40}),nested=cloudAgentDiscordEnv(fast,{deadline_ms:Date.now()+10000});
@@ -213,6 +214,7 @@ test('fast collection stops before another page or channel when its overall twen
  const s=setup();t.after(()=>s.raw.close());const originalNow=Date.now;let now=originalNow(),reads=0,enqueued=0;
  Date.now=()=>now;t.after(()=>{Date.now=originalNow;});
  const result=await collectCloudDiscord(s.env,{configured:()=>true,discord:async(env,path)=>{
+  if(path==='/guilds/'+G+'/threads/active')return{threads:[]};
   reads++;now+=21000;assert.equal(discordRequestTimeoutMs(env),1);return {id:BAD,guild_id:G,type:0};
  },events:{enqueue:async()=>{enqueued++;}}});
  assert.equal(reads,1);assert.equal(enqueued,0);assert.equal(result.observed,0);assert.deepEqual(result.failures,['DISCORD_CHANNEL_1:RECOVERY_CONTINUES_NEXT_TICK']);
