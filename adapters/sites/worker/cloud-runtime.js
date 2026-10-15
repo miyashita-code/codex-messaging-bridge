@@ -1,6 +1,7 @@
 import {renewCloudLineToken} from './line-token.js';
 import {retryCloudLineReplies} from './line.js';
 import {pruneDeliveryDiagnostics} from './delivery-diagnostics.js';
+import {discordGuildProfiles,discordGuildProfile,discordGuildEnv,discordGuildActivation} from './discord-guilds.js';
 const ID=/^[0-9]{17,20}$/;
 const FAST_DISCORD_DEADLINE=Symbol('cloud-agent-discord-deadline');
 // The private overlay is propagated to authorization GETs inside enqueue too.
@@ -49,46 +50,94 @@ async function discordBackoffUntil(env,key){
  if(!Number.isFinite(until)||until<0)throw Error('INVALID_DISCORD_BACKOFF');
  return until;
 }
+function currentCollectionProfile(env,guildId,ch){
+ const profile=discordGuildProfile(env,guildId);
+ if(!profile)throw new ChannelFailure('GUILD_NOT_ALLOWED');
+ if(!profile.poll_channel_ids.includes(ch.id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
+ if(ch.type===1){if(!profile.is_primary)throw new ChannelFailure('DM_CHANNEL_NOT_ALLOWED');}
+ else{
+  if(ch.guild_id!==profile.guild_id)throw new ChannelFailure('GUILD_NOT_ALLOWED');
+  if(profile.allowed_channel_ids.length&&!profile.allowed_channel_ids.includes(ch.id)&&!profile.allowed_channel_ids.includes(ch.parent_id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
+ }
+ return profile;
+}
 async function collectDiscordUnderLease(env,{discord,events,configured,source,fastBackoff=false}){
- const now=Date.now();let observed=0;const failures=[];
- if(fastBackoff)env=cloudAgentDiscordEnv(env,{deadline_ms:now+20000});
+ const now=Date.now(),baseEnv=env;let observed=0;const failures=[];
   if(configured(env)&&env.DISCORD_ENABLE_EVENTS==='true'){
-   const since=Date.parse(env.DISCORD_CLOUD_SINCE||'');
-   if(!Number.isFinite(since)||since<1420070400000)throw Error('DISCORD_START_TIME_REQUIRED');
-   const initial=String(BigInt(since-1420070400000)<<22n);
-   const channels=[...new Set((env.DISCORD_POLL_CHANNEL_IDS||'').split(',').filter(Boolean))];
-   if(!channels.length||channels.length>10||channels.some(id=>!ID.test(id)))throw Error('DISCORD_CHANNELS_REQUIRED');
+   const profiles=discordGuildProfiles(baseEnv),multi=profiles.length>1;
+   // The multi-guild opt-in is bounded too when invoked by maintenance. The
+   // primary-only maintenance path retains its previous retry behavior.
+   fastBackoff=fastBackoff||multi;
+   if(fastBackoff)env=cloudAgentDiscordEnv(baseEnv,{deadline_ms:now+20000});
+   const groups=[];
+   for(const [guildIndex,profile] of profiles.entries()){
+    if(!Number.isSafeInteger(profile.since_ms)||profile.since_ms<1420070400000)throw Error('DISCORD_START_TIME_REQUIRED');
+    const channels=[...new Set(profile.poll_channel_ids)];
+    if(!channels.length||channels.length>10||channels.some(id=>!ID.test(id)))throw Error('DISCORD_CHANNELS_REQUIRED');
+    const activation=await discordGuildActivation(baseEnv,profile.guild_id),since=activation.since_ms;
+    if(!profile.is_primary){
+     // Seed all channels before a slow guild consumes the tick. Initial channels
+     // honor the reviewed activation; later-added channels start when observed.
+     // Empty channels retain the boundary rather than resetting on every tick.
+     for(const id of channels){
+      const start=String(BigInt((activation.initial_channel_ids.includes(id)?since:Math.max(since,now))-1420070400000)<<22n);
+      await run(env,'INSERT OR IGNORE INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?)','cloud_cursor:'+profile.guild_id+':'+id,start,now);
+     }
+    }
+    groups.push({profile,guildIndex,since,channels});
+   }
+   let ordinal=0;
+   if(multi){
+    const saved=await first(env,"SELECT value FROM bridge_runtime WHERE key='cloud_discord_round_robin'");ordinal=saved?Number(saved.value):0;
+    if(!Number.isSafeInteger(ordinal)||ordinal<0)throw Error('INVALID_DISCORD_ROUND_ROBIN');
+    await run(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('cloud_discord_round_robin',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",String((ordinal+1)%1000000),Date.now());
+   }
+   const tasks=[];
+   for(let index=0;index<10;index++)for(const group of groups)if(index<group.channels.length)tasks.push({...group,index,id:group.channels[index]});
+   // Rotate the flattened, guild-interleaved list, so every channel eventually
+   // goes first even when another channel consumes the complete tick budget.
+   if(multi)tasks.push(...tasks.splice(0,ordinal%tasks.length));
    const globalBackoffKey='cloud_discord_backoff:global';
    let globalBackoff=fastBackoff?await discordBackoffUntil(env,globalBackoffKey):0;
-   for(const [index,id] of channels.entries()){
+   for(const {profile,guildIndex,since,index,id} of tasks){
     // A channel ordinal identifies the failed configured entry without copying
     // private Discord IDs into the status or arbitrary upstream error bodies.
-    const failure=code=>failures.push('DISCORD_CHANNEL_'+(index+1)+':'+code);
+    const failure=code=>failures.push((multi?'DISCORD_GUILD_'+(guildIndex+1)+'_':'DISCORD_')+'CHANNEL_'+(index+1)+':'+code);
     if(fastBackoff&&Date.now()-now>=20000){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
     const backoffKey='cloud_discord_backoff:'+id;
     try{
     if(fastBackoff){
      if(globalBackoff>Date.now()||await discordBackoffUntil(env,backoffKey)>Date.now()){failure('DISCORD_RATE_LIMITED');continue;}
     }
-    const ch=await readDiscord(discord,env,'/channels/'+id);
+    // Refresh the live profile before metadata and every body fetch. A revoked
+    // channel may not be read merely because it is still in a saved poll list.
+    const latestProfile=discordGuildProfile(baseEnv,profile.guild_id);
+    if(!latestProfile)throw new ChannelFailure('GUILD_NOT_ALLOWED');
+    if(!latestProfile.poll_channel_ids.includes(id))throw new ChannelFailure('CHANNEL_NOT_ALLOWED');
+    let scoped=discordGuildEnv(env,profile.guild_id);
+    const ch=await readDiscord(discord,scoped,'/channels/'+id);
     if(!ch||ch.id!==id)throw new ChannelFailure('SOURCE_MISMATCH');
+    currentCollectionProfile(baseEnv,profile.guild_id,ch);
     const dm=ch.type===1;
     if(dm){
-     const owner=env.DISCORD_OWNER_USER_ID;
+     const owner=baseEnv.DISCORD_OWNER_USER_ID;
      if(!ID.test(owner||''))throw Error('DISCORD_OWNER_REQUIRED');
      if(ch.recipients?.length!==1||ch.recipients[0].id!==owner)throw new ChannelFailure('DM_RECIPIENT_MISMATCH');
-     await run(env,"INSERT OR IGNORE INTO dm_contacts (channel_id,user_id,guild_id,owner_site_id,source_channel_id,source_message_id,delivery_status,authorized_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?)",id,owner,env.DISCORD_GUILD_ID,env.BRIDGE_OWNER_SITE_ID,id,'cloud-owner',since,Date.now());
-    }else if(ch.guild_id!==env.DISCORD_GUILD_ID)throw new ChannelFailure('GUILD_NOT_ALLOWED');
-    const cursorKey='cloud_cursor:'+id;
+     await run(env,"INSERT OR IGNORE INTO dm_contacts (channel_id,user_id,guild_id,owner_site_id,source_channel_id,source_message_id,delivery_status,authorized_at,updated_at) VALUES (?,?,?,?,?,?,'sent',?,?)",id,owner,profile.guild_id,env.BRIDGE_OWNER_SITE_ID,id,'cloud-owner',since,Date.now());
+    }
+    const cursorKey='cloud_cursor:'+(profile.is_primary?'':profile.guild_id+':')+id;
+    const initial=String(BigInt(since-1420070400000)<<22n);
     const saved=await first(env,'SELECT value FROM bridge_runtime WHERE key=?',cursorKey);
-    const cursor=saved?.value||initial;
+    let cursor=saved?.value||initial;
     if(!ID.test(cursor))throw Error('INVALID_CURSOR');
+    if(!profile.is_primary&&BigInt(cursor)<BigInt(initial))cursor=initial;
     let before,complete=false,budgetExpired=false;const fresh=[];
     // Paginate backwards to the persisted cursor before advancing it. Never
     // silently skip a busy channel's backlog by keeping only its newest page.
     for(let page=0;page<10;page++){
      if(fastBackoff&&Date.now()-now>=20000){budgetExpired=true;break;}
-     const rows=await readDiscord(discord,env,'/channels/'+id+'/messages?limit=100'+(before?'&before='+before:''));
+     currentCollectionProfile(baseEnv,profile.guild_id,ch);scoped=discordGuildEnv(env,profile.guild_id);
+     const rows=await readDiscord(discord,scoped,'/channels/'+id+'/messages?limit=100'+(before?'&before='+before:''));
      if(!Array.isArray(rows)||rows.some(m=>!m||!ID.test(m.id||'')||m.channel_id!==id))throw new ChannelFailure('SOURCE_MISMATCH');
      for(const m of rows)if(BigInt(m.id)>BigInt(cursor))fresh.push(m);
      if(rows.length<100||rows.some(m=>BigInt(m.id)<=BigInt(cursor))){complete=true;break;}
@@ -101,7 +150,8 @@ async function collectDiscordUnderLease(env,{discord,events,configured,source,fa
     for(const m of fresh){
      if(Date.now()-now>20000){failure('RECOVERY_CONTINUES_NEXT_TICK');break;}
      if(!m.author?.bot&&!m.webhook_id&&m.author?.id!==env.DISCORD_BOT_ID&&(!dm||m.author.id===env.DISCORD_OWNER_USER_ID)){
-      await events.enqueue(env,{guild_id:env.DISCORD_GUILD_ID,channel_id:id,message_id:m.id,...(dm?{scope:'dm'}:{})});observed++;
+      currentCollectionProfile(baseEnv,profile.guild_id,ch);scoped=discordGuildEnv(env,profile.guild_id);
+      await events.enqueue(scoped,{guild_id:profile.guild_id,channel_id:id,message_id:m.id,...(dm?{scope:'dm'}:{})});observed++;
      }
      await run(env,'INSERT INTO bridge_runtime (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',cursorKey,m.id,Date.now());
     }

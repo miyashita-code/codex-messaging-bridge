@@ -1,6 +1,7 @@
 // Only confirmed cloud-agent exchanges enter this encrypted, bounded memory.
 // The HTTP adapter must reauthorize the current source before each operation.
 import {eventCryptoForTest as codec} from './events.js';
+import {discordPrimaryGuildId,discordGuildProfile,discordGuildScope} from './discord-guilds.js';
 const PREFIX='cloud_context:v1:';
 const MAX_MESSAGES=12;
 const MAX_CHARS=24000;
@@ -19,7 +20,16 @@ async function location(env,owner,message){
  validMessage(message);
  const line=message.reply_kind==='line_reply';
  const bot=line?env.LINE_BOT_ID:env.DISCORD_BOT_ID;
- const guild=line?'':env.DISCORD_GUILD_ID;
+ let guild=line?'':discordPrimaryGuildId(env);
+ if(message.reply_kind==='discord_reply_dm'&&discordGuildScope(env)&&discordGuildScope(env)!==guild)fail();
+ if(message.reply_kind==='discord_reply_to_mention'){
+  const source=/^discord_guild:([0-9]{17,20}):([0-9]{17,20})$/.exec(message.source_key);
+  const conversation=/^discord_guild:(?:([0-9]{17,20}):)?([0-9]{17,20})$/.exec(message.conversation_key);
+  if(!source||!conversation||source[1]!==conversation[2]||source[2]!==message.source_id)fail();
+  const profile=discordGuildProfile(env,conversation[1]||guild);
+  if(!profile||Boolean(conversation[1])===profile.is_primary||discordGuildScope(env)&&discordGuildScope(env)!==profile.guild_id)fail();
+  guild=profile.guild_id;
+ }
  if(typeof bot!=='string'||!bot||typeof guild!=='string'||!line&&!guild)fail();
  const scope=JSON.stringify([owner,message.reply_kind,bot,guild,message.conversation_key]);
  const prefix=PREFIX+await digest(owner)+':';

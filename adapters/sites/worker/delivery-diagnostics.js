@@ -1,6 +1,7 @@
 // Server-observed tool timings plus the stored platform event timestamp.
 // Event occurrence is not message composition or model/task-start time.
 // Never store message bodies, credentials, callback URLs or raw errors here.
+import {discordPrimaryGuildId,discordGuildProfile,discordGuildEnv} from './discord-guilds.js';
 const PREFIX='delivery_diag:v1:';
 const RETENTION_MS=7*86400000;
 const LIMIT=10;
@@ -30,7 +31,7 @@ function metadata(input){
  return {channel:input.channel,source_id:input.source_id,channel_id:input.channel_id,guild_id:input.guild_id,...(input.channel==='discord_guild'&&ID.test(input.parent_channel_id||'')?{parent_channel_id:input.parent_channel_id}:{}),event_id:`discord_${input.channel==='discord_dm'?'dm_':''}message_${input.source_id}`};
 }
 export const lineDiagnosticSource=eventId=>({channel:'line',source_id:eventId});
-export const discordDiagnosticSource=(env,scope,ch,message)=>({channel:scope==='dm'?'discord_dm':'discord_guild',source_id:message.id,channel_id:message.channel_id,guild_id:env.DISCORD_GUILD_ID,...(ch?.parent_id?{parent_channel_id:ch.parent_id}:{})});
+export const discordDiagnosticSource=(env,scope,ch,message)=>({channel:scope==='dm'?'discord_dm':'discord_guild',source_id:message.id,channel_id:message.channel_id,guild_id:scope==='dm'?discordPrimaryGuildId(env):ch?.guild_id,...(ch?.parent_id?{parent_channel_id:ch.parent_id}:{})});
 export async function recordLineIngressDelivery(env,eventId,isRedelivery,sourceCreated=false){
  try{
   if(env.BRIDGE_RUNTIME!=='cloud'||!env.DB||!env.BRIDGE_OWNER_SITE_ID)return;
@@ -72,18 +73,19 @@ async function permittedSource(env,source,authorizeChannel){
   if(!row||!LINE_USER.test(row.user_id)||!(env.LINE_ALLOWED_USER_IDS||'').split(',').includes(row.user_id))return null;
   return {occurredAt:instant(row.occurred_at),recordedAt:row.created_at,actionKey:'linereply:'+source.source_id};
  }
- if(source.guild_id!==env.DISCORD_GUILD_ID)return null;
  if(source.channel==='discord_dm'){
+  if(source.guild_id!==discordPrimaryGuildId(env))return null;
   const contact=await first(env,'SELECT channel_id FROM dm_contacts WHERE channel_id=? AND guild_id=? AND owner_site_id=?',source.channel_id,source.guild_id,env.BRIDGE_OWNER_SITE_ID);
   if(!contact)return null;
  }else{
-  const allowed=(env.DISCORD_ALLOWED_CHANNEL_IDS||'').split(',').map(id=>id.trim()).filter(Boolean);
+  let profile,scoped;try{profile=discordGuildProfile(env,source.guild_id);if(!profile)return null;scoped=discordGuildEnv(env,source.guild_id);}catch{return null;}
+  const allowed=profile.allowed_channel_ids;
   if(allowed.length&&!allowed.includes(source.channel_id)){
    // Unread event payloads do not carry a thread's parent. Reuse the normal
    // channel authorization rather than omitting legitimate thread events or
    // trusting a parent retained in an older trace after permissions change.
    if(typeof authorizeChannel!=='function')return null;
-   try{const ch=await authorizeChannel(env,source.channel_id);if(ch.id!==source.channel_id||ch.guild_id!==source.guild_id||!allowed.includes(ch.parent_id))return null;}catch{return null;}
+   try{const ch=await authorizeChannel(scoped,source.channel_id);if(ch.id!==source.channel_id||ch.guild_id!==source.guild_id||!allowed.includes(ch.parent_id))return null;}catch{return null;}
   }
  }
  const row=await first(env,'SELECT occurred_at,created_at FROM event_records WHERE id=?',source.event_id);

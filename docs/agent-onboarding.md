@@ -141,6 +141,8 @@ agentは利用環境に実在する接続・委譲toolを使います。手順�
 
 ### Discord
 
+Sites cloud版で同じBotを別サーバーへ追加する場合は、[複数サーバーの設定](../adapters/sites/README.md#manage-multiple-discord-servers)を使います。既存の `DISCORD_GUILD_ID` や本人DMを置き換えず、`DISCORD_GUILDS_JSON` に追加サーバーごとの名前・許可チャンネル・受信チャンネル・開始時刻を設定します。利用者の招待リンクから実際の対象を確認し、Bot自体のサーバー参加と選択チャンネルへのアクセスを確かめます。一般のサーバー招待とBotのOAuth2追加は別です。現在認可されたサーバー・チャンネルでのみ読取・返信し、別サーバーの会話履歴を渡さず、追加後は実メンションと既存DMの両方を検証します。
+
 [Discord標準セットアップ](discord-setup.md)に沿って、[Developer Portal](https://discord.com/developers/applications)の対象Application / Botを確認します。必要なMessage Content Intentと、Botの実装に合うintent、招待scope・最小限のpermissionを設定します。接続情報はそのBotのtokenです。専用の許可済みDM / serverで初回ペアリングと返信を確認します。[Discord公式のGateway仕様](https://docs.discord.com/developers/events/gateway)
 
 新しいpasswordの設定、OTP / SMS、CAPTCHA、規約など、本人操作・その画面の確認が必要な箇所は使用toolの規則に従いprivate handoffを出します。ユーザーが参加する必要のない設定はagentが続けます。

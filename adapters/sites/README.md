@@ -16,6 +16,33 @@ Configure runtime secrets with Sites tools, never source files:
 - Short-lived LINE token renewal: `LINE_CHANNEL_ID`, `LINE_TOKEN_EXPIRES_AT` (verified ISO timestamp). A due renewal is verified against the channel and bot, then stored encrypted in D1. An ambiguous issuance is retained for review and is never blindly repeated. Existing tokens are not revoked.
 - Discord: `DISCORD_BOT_TOKEN`, `DISCORD_BOT_ID`, `DISCORD_GUILD_ID`, `DISCORD_OWNER_USER_ID`, `DISCORD_ALLOWED_CHANNEL_IDS`, `DISCORD_POLL_CHANNEL_IDS` (specific guild/DM IDs), `DISCORD_ENABLE_REPLIES=true`. Keep `DISCORD_ENABLE_EVENTS=false` until a coordinated cutover. Set `DISCORD_CLOUD_SINCE` to that cutover time, then enable collection. Only the verified owner's one-to-one DM is seeded; unknown DMs are rejected.
 
+### Manage multiple Discord servers
+
+One cloud Site can use the same Bot in the existing primary server and up to four additional servers. Keep the primary `DISCORD_GUILD_ID`, its channel settings and owner DM unchanged. Add the other servers through the private runtime variable `DISCORD_GUILDS_JSON`:
+
+```json
+[
+  {
+    "guild_id": "111111111111111111",
+    "label": "Support",
+    "allowed_channel_ids": ["222222222222222222"],
+    "poll_channel_ids": ["222222222222222222"],
+    "since": "2026-10-15T12:00:00.000Z",
+    "enabled": true
+  }
+]
+```
+
+These are example identifiers. Resolve the user's actual server and channel before setting the variable. Each additional server requires one to ten explicit allowed channels and one to ten polling channels; every polling channel must also be allowed. `label` and `enabled` are optional. The primary server must not appear in this array. Invalid, duplicate or unknown fields fail closed. An empty array preserves single-server behavior.
+
+Each profile has its own channel policy and collection start time. Set `since` to the reviewed activation time for a new server; preserve existing profiles, timestamps and cursors when adding another. A channel added later to an existing profile starts at its first collection observation; it does not backfill to the older profile start time. Set a profile's `enabled` to `false` to stop its intake and revoke its retained sources through the normal authorization checks. Removing a channel from `allowed_channel_ids` also revokes access to that channel's prior sources. Bot credentials, owner authentication, the cloud consumer and the existing recovery schedule are shared; this feature adds no host, model API key or scheduled job.
+
+Conversation history is isolated by server and channel. The existing primary-server and owner-DM history retain their original scope. The cloud task must continue using only the context returned for the current claim and keep every reply in its source conversation.
+
+A `discord.gg` link identifies a server invitation; installing the Bot uses the application's Discord OAuth2 Bot authorization link. The installing account needs the server's Manage Server permission. Confirm the actual Bot membership and its access to the chosen channel. Request View Channels, Read Message History and Send Messages; add Send Messages in Threads only for a requested thread workflow. See [Discord Bot authorization](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow).
+
+The owner-only `discord_guilds_list` tool lists the active profiles; `discord_channels_list({guild_id})` inspects the selected configured server and defaults to the primary server for older callers. Refresh the existing plugin tool catalog after deploying these additions. Update this one runtime variable through Sites and deploy a saved version to apply it. Test a fresh `@Bot` mention in each newly enabled channel through a real authorized user client. Verify a reply in that same channel, a separate conversation history in the other server, and an unchanged owner DM. Invitations, configured profiles and mocked tests alone do not establish that the new server is operational.
+
 ### Verify the LINE owner before enabling intake
 
 Sites uses a server-side allowlist and does not issue the Node Gateway's pairing codes. Unknown senders are ignored, so sending a first message before `LINE_ALLOWED_USER_IDS` is configured will not produce a code.

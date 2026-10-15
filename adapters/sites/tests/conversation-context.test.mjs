@@ -31,7 +31,7 @@ test('confirmed pairs survive fresh module calls and only ciphertext and hashed 
 
 test('owner, bot, guild, channel and private/public conversation namespaces never share text',async t=>{
  const s=setup(t);await record(s,s.message());
- for(const extra of [{conversation_key:'line:other'},{reply_kind:'discord_reply_dm',conversation_key:'discord_dm:channel'},{reply_kind:'discord_reply_to_mention',conversation_key:'discord_guild:channel'}])assert.deepEqual((await read(s,s.message(1,extra))).messages,[]);
+ for(const extra of [{conversation_key:'line:other'},{reply_kind:'discord_reply_dm',conversation_key:'discord_dm:channel'},{reply_kind:'discord_reply_to_mention',conversation_key:'discord_guild:'+'6'.repeat(18),source_key:'discord_guild:'+'6'.repeat(18)+':'+'7'.repeat(18),source_id:'7'.repeat(18)}])assert.deepEqual((await read(s,s.message(1,extra))).messages,[]);
  const bot=s.env.LINE_BOT_ID;s.env.LINE_BOT_ID='U'+'9'.repeat(32);assert.deepEqual((await read(s,s.message(1))).messages,[]);s.env.LINE_BOT_ID=bot;
  await assert.rejects(readConversationContext(s.env,'other-owner',s.message(1)),ConversationContextError);
  const second={...s.env,BRIDGE_OWNER_SITE_ID:'other-owner'};assert.deepEqual((await readConversationContext(second,'other-owner',s.message(1))).messages,[]);

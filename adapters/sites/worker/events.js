@@ -1,4 +1,5 @@
 // Official MCP Events webhook delivery. No alternate model or private session API.
+import {discordGuildProfile,discordGuildEnv,discordPrimaryGuildId,discordGuildActivation} from './discord-guilds.js';
 const VERSION='2026-07-28';
 const EVENT_NAME='discord.message.created';
 const DM_EVENT_NAME='discord.dm.message.created';
@@ -8,7 +9,7 @@ const enc=new TextEncoder();
 const ID=/^[0-9]{17,20}$/;
 const object=properties=>({type:'object',properties,additionalProperties:false});
 export const EVENT_DEFINITIONS=[{
- name:EVENT_NAME,description:'A new human message in the one configured Discord guild. Includes source identifiers only; use Discord read tools for content. Team messages do not authorize private actions.',delivery:['webhook'],
+ name:EVENT_NAME,description:'A new human message in an explicitly configured Discord guild. Includes source identifiers only; use Discord read tools for content. Team messages do not authorize private actions.',delivery:['webhook'],
  inputSchema:{...object({guild_id:{type:'string',pattern:ID.source},channel_ids:{type:'array',items:{type:'string',pattern:ID.source},uniqueItems:true,maxItems:100},mentions_only:{type:'boolean'}}),required:['guild_id']},
  payloadSchema:{...object({guild_id:{type:'string'},channel_id:{type:'string'},message_id:{type:'string'},author_id:{type:'string'},mentions_bot:{type:'boolean'},url:{type:'string'}}),required:['guild_id','channel_id','message_id','author_id','mentions_bot','url']},
 }];
@@ -56,10 +57,16 @@ async function signedDelivery(env,sub,delivery,event,isVerification=false){
  if(delivery.previousSecret&&delivery.previousUntil>Date.now())signatures.push(`v1,${await hmac(webhookKey(delivery.previousSecret),`${id}.${timestamp}.${body}`)}`);
  return relay(env,delivery.url,body,{'Content-Type':'application/json','webhook-id':id,'webhook-timestamp':timestamp,'webhook-signature':signatures.join(' '),'X-MCP-Subscription-Id':sub.id});
 }
+function eventGuildEnv(env,guildId,name){
+ try{
+  if(!ID.test(guildId||'')||!discordGuildProfile(env,guildId)||name===DM_EVENT_NAME&&guildId!==discordPrimaryGuildId(env)||env.BRIDGE_RUNTIME!=='cloud'&&guildId!==discordPrimaryGuildId(env))invalid('GUILD_NOT_ALLOWED');
+  return discordGuildEnv(env,guildId);
+ }catch(error){if(error instanceof EventError)throw error;invalid(error?.code==='DISCORD_GUILDS_INVALID'?'DISCORD_GUILDS_INVALID':'GUILD_NOT_ALLOWED');}
+}
 function eventArguments(args,env,name){
  if(name===LINE_EVENT_NAME){if(env.BRIDGE_RUNTIME!=='cloud'||!args||Array.isArray(args)||typeof args!=='object'||Object.keys(args).length)invalid('INVALID_EVENT_ARGUMENTS');return args;}
  if(!args||typeof args!=='object'||Array.isArray(args)||Object.keys(args).some(k=>!['guild_id','channel_ids','mentions_only'].includes(k)))invalid('INVALID_EVENT_ARGUMENTS');
- if(args.guild_id!==env.DISCORD_GUILD_ID||!ID.test(args.guild_id))invalid('GUILD_NOT_ALLOWED');
+ eventGuildEnv(env,args.guild_id,name);
  if(name===DM_EVENT_NAME&&args.mentions_only!==undefined)invalid('INVALID_EVENT_ARGUMENTS');
  if(args.mentions_only!==undefined&&typeof args.mentions_only!=='boolean')invalid('INVALID_EVENT_ARGUMENTS');
  if(args.channel_ids!==undefined&&(!Array.isArray(args.channel_ids)||args.channel_ids.length>100||args.channel_ids.some(x=>typeof x!=='string'||!ID.test(x))||new Set(args.channel_ids).size!==args.channel_ids.length))invalid('INVALID_EVENT_ARGUMENTS');
@@ -105,16 +112,17 @@ export function eventService(deps){
   if(method!=='events/subscribe')throw new EventError('UNKNOWN_EVENT_METHOD',-32601);
   checkEvents(env,params?.name);
   identityParams(params,env,true);sharedKey(env);
+  const subscriptionEnv=params.name===LINE_EVENT_NAME?env:eventGuildEnv(env,params.arguments.guild_id,params.name);
   const id='sub_'+await hash(canonical([principal,params.delivery.url,params.name,params.arguments]));
   if(params.cursor!==undefined&&params.cursor!==null)invalid('REPLAY_NOT_SUPPORTED');
   const ttl=params.ttlMs??24*3600e3;if(!Number.isFinite(ttl)||ttl<=0)invalid('INVALID_TTL');const expiresAt=Date.now()+Math.min(ttl,7*24*3600e3);
-  for(const c of params.arguments.channel_ids||[]){if(params.name===DM_EVENT_NAME){const contact=await dbFirst(env,'SELECT channel_id FROM dm_contacts WHERE channel_id = ? AND guild_id = ? AND owner_site_id = ?',c,env.DISCORD_GUILD_ID,principal);if(!contact)invalid('DM_CHANNEL_NOT_ALLOWED');}else await channel(env,c);}
+  for(const c of params.arguments.channel_ids||[]){if(params.name===DM_EVENT_NAME){const contact=await dbFirst(env,'SELECT channel_id FROM dm_contacts WHERE channel_id = ? AND guild_id = ? AND owner_site_id = ?',c,discordPrimaryGuildId(env),principal);if(!contact)invalid('DM_CHANNEL_NOT_ALLOWED');}else await channel(subscriptionEnv,c);}
   const previous=await dbFirst(env,'SELECT * FROM event_subscriptions WHERE id = ? AND principal = ?',id,principal);
   const old=previous?await unseal(env,previous.delivery_sealed,id):null;
   const delivery={url:params.delivery.url,secret:params.delivery.secret};
   if(old?.secret&&!fixedEqual(old.secret,delivery.secret)){delivery.previousSecret=old.secret;delivery.previousUntil=Date.now()+300000;}else if(old?.previousSecret&&old.previousUntil>Date.now()){delivery.previousSecret=old.previousSecret;delivery.previousUntil=old.previousUntil;}
   const operationId=crypto.randomUUID();
-  const migrationStart=env.BRIDGE_RUNTIME==='cloud'&&params.name!==LINE_EVENT_NAME?Date.parse(env.DISCORD_CLOUD_SINCE||''):NaN;
+  const migrationStart=env.BRIDGE_RUNTIME==='cloud'&&params.name!==LINE_EVENT_NAME?Date.parse(subscriptionEnv.DISCORD_CLOUD_SINCE||''):NaN;
   const startedAt=previous?.active&&previous.expires_at>Date.now()?previous.started_at:Number.isFinite(migrationStart)?Math.min(Date.now(),migrationStart):Date.now();
   const pendingSealed=await seal(env,delivery,id);
   const reserved=await dbRun(env,`INSERT INTO event_subscriptions (id, principal, name, arguments_json, delivery_sealed, operation_id, expires_at, verified_until, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)
@@ -147,7 +155,8 @@ export function eventService(deps){
  }
  async function enqueue(env,input){
   const isDm=input?.scope==='dm';const expected=isDm?'channel_id,guild_id,message_id,scope':'channel_id,guild_id,message_id';
-  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!==expected||input.guild_id!==env.DISCORD_GUILD_ID)invalid('INVALID_INGRESS_EVENT');
+  if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).sort().join(',')!==expected)invalid('INVALID_INGRESS_EVENT');
+  env=eventGuildEnv(env,input.guild_id,isDm?DM_EVENT_NAME:EVENT_NAME);
   let verified;try{verified=await (isDm?dmSource:source)(env,input);}catch(e){if(isDm&&['DM_CHANNEL_NOT_ALLOWED','DM_SOURCE_TOO_OLD'].includes(e.code))return null;throw e;}
   const {m}=verified;if(isDm&&await honorDmStop(env,m))return null;
   const happened=Date.parse(m.timestamp);if(!Number.isFinite(happened)||happened>Date.now()+60000)invalid('INVALID_EVENT_TIME');
@@ -184,10 +193,15 @@ export function eventService(deps){
    let status='pending',retryAt=Date.now()+Math.min(3600e3,1000*2**Math.min(lease.attempts,12));
    try{
     checkEvents(env,item.name);
-    const data=JSON.parse(item.data_json);const {m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(env,{channel_id:data.channel_id,message_id:data.message_id});if(item.name===DM_EVENT_NAME&&await honorDmStop(env,m)){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
+    const data=JSON.parse(item.data_json),sourceEnv=item.name===LINE_EVENT_NAME?env:eventGuildEnv(env,data.guild_id,item.name);
+    const {m}=item.name===LINE_EVENT_NAME?await lineSource(env,data):await (item.name===DM_EVENT_NAME?dmSource:source)(sourceEnv,{channel_id:data.channel_id,message_id:data.message_id});
+    if(item.name===EVENT_NAME&&data.guild_id!==discordPrimaryGuildId(env)&&Date.parse(m.timestamp)<(await discordGuildActivation(env,data.guild_id)).since_ms)invalid('SOURCE_MISMATCH');
+    if(item.name!==LINE_EVENT_NAME&&m.author.id!==data.author_id)invalid('SOURCE_MISMATCH');
+    if(item.name===DM_EVENT_NAME&&await honorDmStop(env,m)){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
     if(item.name===DM_EVENT_NAME){const pref=await dbFirst(env,'SELECT blocked, updated_at FROM dm_preferences WHERE user_id = ?',data.author_id);if(pref?.blocked&&Date.parse(item.occurred_at)<=pref.updated_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}}
     const current=await dbFirst(env,'SELECT * FROM event_subscriptions WHERE id = ?',item.subscription_id);
     if(!current?.active||current.expires_at<=Date.now()||current.principal!==env.BRIDGE_OWNER_SITE_ID||Date.parse(item.occurred_at)<current.started_at){await dbRun(env,'UPDATE event_outbox SET status = ?, lease_until = 0, updated_at = ? WHERE id = ? AND lease_token = ?','cancelled',Date.now(),item.id,leaseToken);continue;}
+    if(item.name!==LINE_EVENT_NAME){const args=JSON.parse(current.arguments_json);eventArguments(args,env,item.name);if(!matches(args,data))invalid('SOURCE_MISMATCH');}
     const delivery=await unseal(env,current.delivery_sealed,item.subscription_id);
     const response=await signedDelivery(env,{id:item.subscription_id},delivery,{eventId:item.event_id,name:item.name,timestamp:item.occurred_at,data,cursor:null});
     if(response.status>=200&&response.status<300){status='delivered';delivered++;await dbRun(env,"INSERT INTO bridge_runtime (key,value,updated_at) VALUES ('event_callback_accepted','ok',?) ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",Date.now());}
