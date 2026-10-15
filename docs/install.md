@@ -1,6 +1,8 @@
 # Install / 構成別セットアップ
 
-Node.js **22.13以上**、npm、Gitを用意します。以下はmacOS / Linux / WSLなどのPOSIXシェル用です。利用者ごとに自分のBot認証情報・CodexまたはYour dotアカウント・保存領域を使います。
+追加hosting契約なしのクラウド構成を希望し、自分のアカウントでSitesを使える場合は、[Sites adapter](../adapters/sites/README.md)と[agentオンボーディング](agent-onboarding.md)から始めます。LINE公開Webhookと保存領域をSitesへ配備し、Your dotのMCP Events経路、または明示的に許容したnative cloud Work taskの実験経路を接続します。後者はYour dot本人の記憶やローカルCodexとは別で、無期限常駐・自動cold restartは未検証です。[実測と制限](cloud-computer.md)
+
+以下は **Node Gateway版** の構成別手順です。Node.js **22.13以上**、npm、Gitを用意します。コマンドはmacOS / Linux / WSLなどのPOSIXシェル用です。利用者ごとに自分のBot認証情報・CodexまたはYour dotアカウント・保存領域を使います。Node版の設定生成やCLIペアリングだけではSites版は配備されません。
 
 ```bash
 git clone https://github.com/miyashita-code/codex-messaging-bridge.git
@@ -140,6 +142,8 @@ codex login status
 - 同じ保存領域でGatewayを二重起動しません。起動中のGatewayに対して、別の端末からペアリング・受信箱のCLIを使えます。
 
 ## English installation guide
+
+For a cloud deployment without a separate hosting contract, first check whether your account can use [the Sites adapter](../adapters/sites/README.md). It supports Your dot MCP Events and an experimental native cloud Work receiver; the latter does not share Your dot's personal memory and does not establish indefinite uptime or automatic cold restart. The following commands configure the separate **Node Gateway** implementation, not a Sites deployment.
 
 Requirements: Node.js **22.13+**, npm, Git and a POSIX shell. Clone the repository using the commands at the top, then run `npm ci --ignore-scripts`. There are no external runtime npm dependencies. Keep your real configuration in `bridge.config.json`, tokens in `.env` and message data in `data/`; all three are ignored by Git.
 

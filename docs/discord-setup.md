@@ -1,6 +1,8 @@
 # Discord
 
-[OpenClawのDiscordセットアップ](https://docs.openclaw.ai/channels/discord/setup)に合わせた手順で、Discord Botを接続します。設定は `channels.discord`、DMの初回承認は `pairing`、メッセージ受信はDiscord Gatewayです。
+このページは **Node Gateway版** のセットアップです。[OpenClawのDiscordセットアップ](https://docs.openclaw.ai/channels/discord/setup)に合わせてBotを接続します。設定は `channels.discord`、DMの初回承認は `pairing`、メッセージ受信はDiscord Gatewayです。対応範囲は[互換仕様](discord-parity.md)を参照してください。
+
+Sitesを使うクラウド構成では、Bot作成・招待は共通ですが、配備・許可設定・受信方式が異なります。[Sitesガイド](../adapters/sites/README.md)へ進んでください。Sites版はREST回収のため、Gatewayへ接続せずBotがオフライン表示でも返信できます。接続状態は表示色だけで判断せず、回収記録と新規メッセージへの実返信で確認します。複数サーバー・公開スレッドの設定もSitesガイドにあります。
 
 Discord側との通信は外向きのWebSocketとHTTPSだけなので、Discordのための公開ドメイン、Webhook URL、HTTPSサーバーは不要です。Gateway接続を保つプロセスと保存領域は必要です。[Discord Gateway仕様](https://docs.discord.com/developers/events/gateway)
 
@@ -9,7 +11,7 @@ Discord側との通信は外向きのWebSocketとHTTPSだけなので、Discord�
 Node.js 22.13以降で、このリポジトリを使います。
 
 ```bash
-npm install
+npm ci --ignore-scripts
 ```
 
 設定ファイルがまだない場合だけ作成します。
@@ -200,7 +202,7 @@ Bot同士の連続応答には、account・チャンネル・相手Botごとの�
 
 ## Troubleshooting
 
-- **Botがオンラインにならない:** `./bin/codex-line-bridge channels status --probe` でTokenの状態を確認します。Discordへの外向きHTTPS/WebSocket通信を許可し、Gatewayを起動したコンピューターを稼働させます。
+- **Node版のBotがオンラインにならない:** `./bin/codex-line-bridge channels status --probe` でTokenの状態を確認します。Discordへの外向きHTTPS/WebSocket通信を許可し、Gatewayを起動したコンピューターを稼働させます。Sites版のREST回収はオンライン表示を前提にしません。
 - **Intentが拒否される:** Developer Portalと `channels.discord.intents` の設定を合わせます。Message Content Intentを有効にしたあとGatewayを再起動します。
 - **DMが受け付けられない:** サーバーのDM設定、`dm.enabled`、`dmPolicy` とペアリングの承認を確認します。
 - **サーバーだけ反応しない:** Server ID、送信者の `users` / `roles`、`channels` 許可リスト、Botへのメンションを確認します。

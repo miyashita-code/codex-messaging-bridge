@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased — 2026-10-15
+## Unreleased — 2026-10-16
+
+- Refresh the public README with a project illustration, runtime selection, private-profile quickstart, Node/Sites feature boundaries and current cloud verification limits. Add contribution and security-reporting guides.
+- Expand the GitHub Actions template for Node 22.13, 24 and 26: offline root/Sites tests, syntax checks, Sites build/validation and cloud packaging. Pin third-party actions to reviewed commits and request read-only repository access. Automatic CI remains unenabled because the publishing authorization lacks workflow-write scope.
+- Make cloud archive gzip bytes reproducible across packaging times; keep the public-source allowlist and exclude private configuration, preview images and runtime state.
+- Add an opt-in first-party cloud-task receiver with bounded MCP waits, a single consumer lease, fixed-source claims and durable send fences. The tested model runtime is native ChatGPT Work, separate from Your dot and Codex Cloud coding tasks.
+- Encrypt bounded per-conversation history for cloud-task continuation. Preserve owner/Bot/platform/conversation scope, logical retention and review-only handling of uncertain writes.
+- Support one primary plus four additional Discord guild profiles with explicit channel policies and monotonic activation boundaries. Preserve primary-guild and owner-DM history. Collect active public threads only under allowed polling parents.
+- Verify the Bot's managed-role mentions through current guild role metadata. Add owner-only recovery of a reviewed missed invocation without rewinding cursors or erasing reply actions.
+- Read authorized Discord text attachments by actual source IDs, using bounded UTF-8 pages, current-access rechecks and fixed CDN paths. Fix the request-init compatibility observed in Sites.
+- Verify warm cloud Work LINE/Discord replies with owned local receivers stopped and the local cloud-task viewer closed. Verify additional-guild replies, existing DM continuity and source isolation. Confirm public-thread reads and four text attachments reaching EOF in a separate read-only pass. Physical PC-off, unlimited uptime, unattended cold restart and fresh public-thread reply E2E remain unverified.
+
+### Earlier cloud event-path work — 2026-10-15
 
 - Fix empty-argument MCP tool validation so cloud recovery can execute through the installed plugin. Persist separate MCP maintenance evidence and provide an owner-only LINE inbox using the same deduplicated reply path.
 - Isolate Discord channel and LINE token failures so other channels and pending callbacks keep recovering. Retry explicit LINE 429 rejections from encrypted state with the original reply content, fixed recipient and push retry key; ambiguous sends remain review-only. Fix Discord-only cloud maintenance so it does not require LINE credentials.

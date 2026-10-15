@@ -1,15 +1,16 @@
-import { mkdirSync,mkdtempSync,lstatSync,readdirSync,copyFileSync,chmodSync,utimesSync,renameSync,rmSync } from 'node:fs';
+import { mkdirSync,mkdtempSync,lstatSync,readdirSync,copyFileSync,readFileSync,writeFileSync,chmodSync,utimesSync,renameSync,rmSync } from 'node:fs';
 import { resolve,dirname,join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 mkdirSync(resolve(root,'data'),{recursive:true,mode:0o700});
 const target=resolve(root,'data/codex-messaging-bridge-cloud.tar.gz');
 // Explicit allowlist: never package the active .env, local config, receipts or authentication files.
-const files=['package.json','package-lock.json','README.md','CHANGELOG.md','AGENTS.md','agent.md','LICENSE','.env.example','bridge.config.example.json','bridge.discord.example.json','bridge.discord.cloud.example.json','src','bin','scripts','docs','deploy','plugin','tests'];
+const files=['package.json','package-lock.json','README.md','CHANGELOG.md','SECURITY.md','CONTRIBUTING.md','AGENTS.md','agent.md','LICENSE','.env.example','bridge.config.example.json','bridge.discord.example.json','bridge.discord.cloud.example.json','assets/readme-hero.png','src','bin','scripts','docs','deploy','plugin','tests'];
 for(const entry of ['README.md','package.json','drizzle.config.ts','.openai/hosting.json','db','drizzle','worker','scripts','tests'])files.push(`adapters/sites/${entry}`);
 const work=mkdtempSync(resolve(root,'data/.cloud-package-'));
-const stage=join(work,'source'),archive=join(work,'archive.tar.gz');
+const stage=join(work,'source'),tarArchive=join(work,'archive.tar'),archive=join(work,'archive.tar.gz');
 const excluded=name=>name==='.DS_Store' || name.startsWith('._') || (name.startsWith('.env') && name!=='.env.example') || name==='bridge.config.json' || /\.sqlite.*$|\.log$/.test(name);
 function copySource(relative) {
   const source=resolve(root,relative),destination=resolve(stage,relative),info=lstatSync(source);
@@ -35,7 +36,9 @@ try {
       ? ['--format=ustar','--uid','0','--gid','0','--uname','root','--gname','root','--no-acls','--no-xattrs','--no-fflags']
       : null;
   if(!portable)throw new Error('Packaging requires GNU tar or bsdtar');
-  execFileSync('tar',[...portable,'-czf',archive,...files],{cwd:stage,env:{...process.env,COPYFILE_DISABLE:'1',COPY_EXTENDED_ATTRIBUTES_DISABLE:'1'},stdio:'inherit'});
+  execFileSync('tar',[...portable,'-cf',tarArchive,...files],{cwd:stage,env:{...process.env,COPYFILE_DISABLE:'1',COPY_EXTENDED_ATTRIBUTES_DISABLE:'1'},stdio:'inherit'});
+  // Node writes a zero gzip timestamp; bsdtar -z otherwise embeds the current time.
+  writeFileSync(archive,gzipSync(readFileSync(tarArchive)),{mode:0o644});
   renameSync(archive,target);
 } finally {rmSync(work,{recursive:true,force:true});}
 console.log(JSON.stringify({artifact:target,includesSecrets:false}));

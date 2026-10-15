@@ -1,6 +1,22 @@
 # Your dot の cloud computer とホスティング
 
-確認日: 2026年10月15日。**Sites + Your dotで、Macの受信サービスを停止した実LINE / Discordメンション・本人DMへの自動返信を確認しました。** 追加hosting契約やOpenAI APIキーは使っていません。受信はSitesのWorker/D1、AI応答はYour dotが担当します。Discordの試験ではcloud受信タブを開いていました。任意のNode daemonをcloud computerに置く方式の24時間常駐は引き続き未検証です。
+更新日: 2026年10月16日。現在のクラウド実験構成は **Sites Worker/D1 + native cloud Work task** です。LINEは公開Webhookで受信し、DiscordはMCP待受中にRESTで回収します。返信の推論は利用者が許可したcloud Work taskが行います。Your dot本人のイベント処理、個人記憶、Codex Cloudとは区別します。各利用者のSites・接続・cloud taskの利用権限と上限を確認する必要があります。
+
+この構成では追加hosting契約やOpenAI APIキーを使わず、対象のlocal受信サービス・tunnel停止、browser tickのstandby、localのcloud chat panel閉鎖後の実LINE / Discord返信を確認しました。物理的なPC電源断、無期限常駐、全UIを閉じた状態からの自動cold restartは未検証です。導入は[Sitesガイド](../adapters/sites/README.md#first-party-cloud-task-receiver-experimental)と[接続ガイド](dot-integration.md#first-party-cloud-taskで待機返信する実験経路)に従います。Node Gatewayをcloud computerに置く方式は別の構成です。
+
+## クラウド実験構成の実測（2026年10月15日）
+
+| 確認した経路・機能 | 結果と範囲 |
+| --- | --- |
+| LINE → cloud Work → 同じ会話 | 通常の観測では約6–10秒。別の入力では約68–70秒かかり、そのうち約62–63秒がcloud保存前の遅延だった。最初に保存された受信がredeliveryだった例もあり、公開受信経路の遅延原因は未特定。 |
+| Discord → cloud Work → 同じ会話 | 約10–21秒の観測があり、後の本人DMは11.899秒。local受信停止、cloud chat panel閉鎖後の新規入力でも返信した。常時この時間で返せる保証ではない。 |
+| 追加Discordサーバー | 同じBotのサーバー別profile・許可チャンネルを設定し、メンション返信と既存本人DMの維持を確認。会話履歴をサーバー・チャンネルごとに分離し、別サーバーの履歴を回答へ流用しないことも確認した。 |
+| Botの管理ロール宛メンション | 実際のBot用managed roleを検証し、取りこぼしていた議事録の依頼を回収。同じ会話への返信が完了した。本文読取からAPI配送完了までは28.971秒で、元の投稿時刻からの応答時間ではない。 |
+| 議事録資料の読取 | 公開スレッド3件と、実際のメッセージに付いたUTF-8テキスト/Markdown添付4件を読み、添付の最終ページまで取得したことを確認。資料読取の検証であり、スレッド内の新規投稿から自動返信までのE2Eとは別。 |
+
+これらは個別の実通信の観測で、他アカウントでの動作、最大応答時間、24時間連続運転を保証しません。新規スレッド入力から同じスレッドへの返信、task中断後の全UI閉鎖状態からの自動復帰、物理PC電源断は別途確認が必要です。既存の毎時復旧taskは維持していますが、高速受信が止まると次の復旧まで待つ場合があり、実行自体も遅延・失敗し得ます。
+
+Your dot本人が返信する **Sites + MCP Events** 経路も実装し、同日に実往復を確認しています。こちらはイベント通知後に約10分待った例があります。後半の[移行検証](#sitesでの移行検証2026年10月15日)は、この先行するevent/browser構成の記録です。現在のcloud Work実験の待受方式と混ぜて読まないでください。
 
 リポジトリを渡してagentにセットアップを任せる入口は [`AGENTS.md`](../AGENTS.md) と[agentオンボーディング](agent-onboarding.md)です。cloudで設定を準備し、アカウント設定は接続済みlocal PCへ委譲し、cloudで実接続とPC独立性を確認する手順を用意しています。設定準備とcloud常駐の実証は分けて扱います。
 
@@ -9,7 +25,7 @@
 ./bin/codex-line-bridge setup prepare --target dot-cloud --channel both --mode dot
 ```
 
-private設定は `data/setup/dot-cloud/bridge.config.json`、`.env`、非秘密の再開状態は `setup-state.json` に保存します。既存の稼働設定を上書きせず、不足している設定と検証条件を確認して進めます。
+上のコマンドはNode版の計画と設定の準備です。private設定は `data/setup/dot-cloud/bridge.config.json`、`.env`、非秘密の再開状態は `setup-state.json` に保存します。Sitesへの配備やcloud Work taskの接続は行いません。既存の稼働設定を上書きせず、選んだ構成の不足条件を確認して進めます。
 
 ## Cloud computerで確認できること
 
@@ -27,7 +43,7 @@ localで設定したBotをcloudで動かすには、cloud runtimeにも必要な
 
 ## 移行前のlocal構成と電源・再起動
 
-2026年10月14日までの実メッセージ検証はmacOS上の個人用Codex構成です。LINE / DiscordのGatewayとCodex app-serverはlocalで動きます。LINEは公開HTTPS tunnel経由でlocal Webhookへ届きます。所有者限定SiteのMCPプラグインはインストール・OAuth接続を完了し、認証済みの状態取得を確認しました。Your dot側からも状態取得成功とイベントソースの表示が報告されています。イベント購読とcloudでの自動返信は未検証です。
+以下は2026年10月14日までの移行前の記録です。当時の実メッセージ検証はmacOS上の個人用Codex構成でした。LINE / DiscordのGatewayとCodex app-serverはlocalで動き、LINEは公開HTTPS tunnel経由でlocal Webhookへ届いていました。所有者限定SiteのMCPプラグインはインストール・OAuth接続を完了し、認証済みの状態取得を確認しました。Your dot側からも状態取得成功とイベントソースの表示が報告されています。この時点では、イベント購読とcloudでの自動返信は未検証でした。
 
 この構成ではshutdown / sleep / network切断中に受信と返答が止まります。設定したLaunchAgentはログイン後にサービスを起動し、process停止時の復帰も行いますが、PCの電源off中に動くものではありません。実機ではGateway再起動後の承認・会話の継続を確認しており、macOS全体のreboot / loginをまたぐE2E試験とは区別します。配布repoだけでこのMacのprivate service設定が他のcomputerへコピーされることもありません。
 
@@ -36,7 +52,8 @@ localで設定したBotをcloudで動かすには、cloud runtimeにも必要な
 | 経路 | 必要なもの | 公開HTTPS受信先 |
 | --- | --- | --- |
 | LINE → ブリッジ | LINEからのWebhookを受けるプロセス | 必要 |
-| Discord → ブリッジ | Discord Gatewayへの外向きWebSocket接続を保つプロセス | Botのメッセージ受信には不要 |
+| Discord → Node版ブリッジ | Discord Gatewayへの外向きWebSocket接続を保つプロセス | Botのメッセージ受信には不要 |
+| Discord → Sites版ブリッジ | 許可済み会話をRESTで回収するcloud task、またはevent構成のcloud browser / 復旧task | SitesのMCP接続先を利用 |
 | Your dot → ブリッジ | MCPプラグインの接続先とOAuth認可 | 公開HTTPS、または対応するprivate MCP tunnel |
 | ブリッジ → Your dot | MCP Eventsの購読と、署名付きcallbackへの外向きHTTPS | callbackはChatGPTが指定 |
 | 同じcomputerの受信箱 → Your dot | `backend: inbox` のCLIで読取・返信 | 不要。イベントによる自動起動は行わない |
@@ -51,7 +68,7 @@ GitHubからimportしたpluginが `mcp.json`等でMCP serverを宣言してい�
 
 ## 自分でサーバーを契約したくない場合
 
-Sitesが利用できるアカウントでは、[Sites adapter](../adapters/sites/README.md)を先に評価します。公開LINE WebhookとD1への保存、MCP EventsをSitesに置き、Discordは許可済み会話のREST回収を行います。cloud browserによる15秒間隔の回収と、利用可能なクラウドスケジュールによる復旧を組み合わせます。以下のCLI受信箱方式とは別です。
+Sitesが利用できるアカウントでは、[Sites adapter](../adapters/sites/README.md)を先に評価します。公開LINE WebhookとD1への保存をSitesに置き、Discordは許可済み会話のREST回収を行います。返信担当にはYour dotのMCP Events経路と、利用者が明示的に許可したnative cloud Work taskの実験経路があります。後者はMCP待受中に回収し、有効化中のbrowser tickはstandbyです。前者はcloud browserによる15秒回収や復旧taskを使います。どちらも利用可能な機能と継続稼働を実環境で確認します。以下のNode CLI受信箱方式とは別です。
 
 Discordだけを個人用に使うなら、すでにあるコンピューターでGateway接続を動かすことで、Discord受信用の公開サーバー契約とドメインを省けます。`bridge.discord.cloud.example.json` は `backend: inbox`、`transport: headless` で、HTTPポートを開きません。Your dotが同じcomputerでCLIを使って受信箱を読み、同じ会話へ返信できます。OpenAI APIキーやMCPの公開先は使いません。ただし新着受信でYour dotを自動起動する機能はなく、Your dotが受信箱を確認するときに処理します。MCP Eventsによる自動起動を使う場合は、別途MCP接続の経路が必要です。CLIのセットアップでは、自動応答が不要な受信箱方式を選ぶときだけ `--channel discord --mode inbox` を明示します。
 
@@ -75,6 +92,8 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 
 ## Sitesでの移行検証（2026年10月15日）
 
+以下は同日の先行する **Your dot + MCP Events / cloud browser回収** の検証記録です。現在のcloud Work実験の構成・結果は冒頭を参照してください。
+
 本人用Site-created pluginを接続し、LINE・Discord DM・Discordメンションの3種類のMCP Events購読を確認しました。LINE入口だけを署名検証付きで公開し、MCPと運用画面は本人認証を維持しています。必要なBot接続secretだけをSitesのprivate runtime設定へ移し、Codexログイン・cookie・会話DBは移していません。
 
 | 試験 | 実測結果 |
@@ -92,13 +111,13 @@ LINEには、ChatGPTへのサインインなしでPOSTを受けられるHTTPS入
 
 この試験では、スケジュールtaskからcloud受信タブを再度開く操作が `ERR_BLOCKED_BY_CLIENT` で拒否されました。既存スケジュールは、実行できたMCP回収だけを行う指示へ修正しました。受信タブの自動再開は確認済み機能として扱いません。
 
-Discordの高速回収はdotのcloud browserタブが開いている間に動きます。タブが閉じた場合の返信はスケジュールの頻度・実行遅延に影響され、常時即時返信を保証しません。LINEはタブが閉じてもWebhookで受信・保存し、受信処理から通知を試みます。通知失敗は永続キューに残り、復旧処理が再試行します。通知の2xx受理後のdot処理は非同期で、今回の新規LINEには約10分の待ち時間がありました。即時返信や最大待ち時間の保証ではありません。[MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+このevent/browser構成のDiscord高速回収はdotのcloud browserタブが開いている間に動きます。タブが閉じた場合の返信はスケジュールの頻度・実行遅延に影響され、常時即時返信を保証しません。LINEはタブが閉じてもWebhookで受信・保存し、受信処理から通知を試みます。通知失敗は永続キューに残り、復旧処理が再試行します。通知の2xx受理後のdot処理は非同期で、今回の新規LINEには約10分の待ち時間がありました。即時返信や最大待ち時間の保証ではありません。[MCP Events](https://developers.openai.com/plugins/build/mcp-events)
 
 ここでのPC独立性試験は、**owned local受信サービス・tunnelを停止し、localhostの受信口を利用できなくした状態**です。物理的なPC電源断、Wi-Fi切断、24時間連続稼働とは区別します。Discordのメンションと本人DMはcloud受信タブを開いた状態で実返信を確認しました。タブ停止後の定期回収・返信は引き続き未検証です。公開repoにはprivateのaccount ID・token・会話データを含めません。
 
 ## Cloudでの試験結果と残る確認
 
-以下は2026年10月14日時点の調査記録です。現在のSites移行結果は前節を参照してください。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別task、SitesのWorkerは別の実行環境です。desktopのterminal実観測、dot・別taskからの実行報告、Siteへの実HTTPリクエストの計測を分けて記録します。
+以下は2026年10月14日時点の調査記録です。現在のSites / cloud Work実験の結果は冒頭を参照してください。dotのdesktop computer、会話中のcode runtime、保存済みCloud environmentの別task、SitesのWorkerは別の実行環境です。desktopのterminal実観測、dot・別taskからの実行報告、Siteへの実HTTPリクエストの計測を分けて記録します。
 
 | 環境・証拠 | 準備・通信の結果 | 保存・継続の結果 |
 | --- | --- | --- |

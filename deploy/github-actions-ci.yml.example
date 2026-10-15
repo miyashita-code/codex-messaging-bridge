@@ -1,8 +1,11 @@
+# Copy to .github/workflows/ci.yml with workflow-write authorization to enable CI.
+# These checks do not deploy a Site or use Bot credentials.
 name: CI
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,17 +14,23 @@ jobs:
   test:
     name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24, 26]
+        node: ['22.13.0', '24', '26']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm test
+      - run: npm run test:sites
       - run: npm run check
+      - run: npm --prefix adapters/sites run build
+      - run: npm --prefix adapters/sites run validate
+      - run: npm run package:cloud

@@ -1,13 +1,15 @@
 # LINE
 
-[OpenClawの標準LINEガイド](https://docs.openclaw.ai/channels/line)と同じ設定名・アクセス制御で、LINE Botを接続します。このブリッジではLINE機能を本体に同梱しています。
+このページは **Node Gateway版** のセットアップです。[OpenClawの標準LINEガイド](https://docs.openclaw.ai/channels/line)に合わせた設定名・アクセス制御でLINE Botを接続します。対応範囲は[互換仕様](openclaw-parity.md)を参照してください。
+
+Sitesを使うクラウド構成では、アカウント・Bot作成の工程は共通ですが、配備・認可・Webhookパスが異なります。[Sitesガイド](../adapters/sites/README.md)へ進んでください。Sites版は本人allowlistによる1対1テキスト受信で、Node版のCLIペアリングは使いません。受信口もNode版の `/line/webhook` に対してSites版は `/webhooks/line` です。
 
 ## Install
 
 このリポジトリでインストールします。Node.js 22.13以降が必要です。
 
 ```bash
-npm install
+npm ci --ignore-scripts
 ```
 
 初回だけ設定ファイルを作ります。すでに `bridge.config.json` と `.env` がある場合は、その設定を使います。

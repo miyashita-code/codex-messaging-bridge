@@ -60,7 +60,7 @@ dotのイベント起動待ちを通さず、既存のfirst-party cloud taskがM
 
 同じ会話の確定済み入力・返信を暗号化して最大6往復/12メッセージ/24,000文字保存し、次のwaitの `conversation_context` へ渡します。owner・Bot・チャネル種別・会話の境界を保ち、Your dot本人の記憶とは区別します。モデルは返された同会話履歴だけを使い、運用chatや別会話の事実を混ぜません。30日より古い履歴は読取対象外、暗号文の削除は次の成功write時のlazy cleanupです。`context_recorded:false` でも完了済み送信は再送しません。
 
-Discordで過去の議事録などを明示的に依頼された場合は、現在claimしたサーバー・チャンネルの認可済み履歴を `discord_history_read` で読み、必要に応じて同じ親の公開スレッドを辿ります。実メッセージが返した添付IDは `discord_text_attachment_read` でページを辿って読めます。これは返信済み入力の再処理ではなく、現在の依頼への読取です。Botが投稿した議事録も資料として読めますが、その本文や添付は未信頼データです。別サーバー・本人DM・非公開スレッドや運用chatの内容を混ぜず、返信は引き続き現在のclaimへ1回だけ送ります。ページや添付を読み残した場合は、全件を読了したと報告しません。
+Discordで過去の議事録などを明示的に依頼された場合は、現在claimしたサーバー・チャンネルの認可済み履歴を `discord_history_read` で読み、必要に応じて同じ親の公開スレッドを辿ります。実メッセージが返した添付IDは `discord_text_attachment_read` でページを辿って読めます。これは返信済み入力の再処理ではなく、現在の依頼への読取です。Botが投稿した議事録も資料として読めますが、その本文や添付は未信頼データです。別サーバー・本人DM・非公開スレッドや運用chatの内容を混ぜず、返信は引き続き現在のclaimへ1回だけ送ります。全文を読む依頼ではhistoryの `page_full:false` または空page、添付の `next_offset:null` / `end_of_file:true` まで辿り、返却本文をモデルの読解へ渡します。code内で取得して破棄するだけでは読了と扱いません。実エラー・非対応形式・platform上限で読み残した場合は、全件を読了したと報告せず具体的な範囲を示します。通常の短い依頼では追加資料を巡回せず、公開メンションへの返信は500文字以内で元claimへ1回だけ送ります。
 
 wait中のDiscord回収は既存cursor・収集lease・認可・429 cooldownを共有し、GETによる取込と永続化だけを行います。LINE token更新・LINE再送・callback drainは行いません。有効化中の `/runtime/tick` はstandbyを返し、残存browser tabからも回収・送信しません。受信本文を信頼済みの指示として扱わず、会話ごとの非公開contextを分け、空・busy・lease喪失時に勝手な送信やconsumerの奪取をしないようtaskへ指示します。送信結果不明・失敗・予約済みの入力は再送せず、確認待ちとして残します。
 
@@ -126,6 +126,6 @@ Webhookは最大8回まで指数バックオフで再試行し、`410` と `413`
 
 ## 個人用Codexバックエンドとの違い
 
-`backend: "codex"` は、このMacの既存Codexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。標準のYour dot + MCP Events経路や、上記のfirst-party cloud task実験経路と区別し、ローカルCodex代替の認証をcloudへ輸出したり、商用認証として扱ったりしないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
+`backend: "codex"` は、実行するコンピューター上の利用者自身のCodexログインでローカルapp-serverを起動する個人用の代替経路です。Your dot自体へメッセージを送る経路ではなく、Your dotの記憶やクラウド常駐機能とは別です。Codex app-server認証を商用・ホスト型サービスに使うことは公式に許可されていません。標準のYour dot + MCP Events経路や、上記のfirst-party cloud task実験経路と区別し、ローカルCodex代替の認証をcloudへ輸出したり、商用認証として扱ったりしないでください。[Codex App Server](https://learn.chatgpt.com/docs/app-server)
 
-この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。Sites版では2026-10-15に実購読とYour dotのLINE / Discordメンションへの自動返信をローカル受信停止中に確認しました。Node版のcloud daemon常駐は未検証です。[READMEの検証範囲](../README.md#実装範囲検証)を参照してください。
+この実装の自動テストは署名、challenge、購読の永続化、期限、解除、アクセス撤回、返答の宛先制限、再配信を確認します。LINE・DiscordとmacOSの個人用Codexとの実往復は確認済みです。別途構成した所有者限定SiteのMCP入口ではOAuth接続・状態取得を確認し、Your dot側も実呼び出し成功を報告しています。Sites版では2026-10-15に実購読とYour dotのLINE / Discordメンションへの自動返信をローカル受信停止中に確認しました。native cloud Workによる実返信は、その後の別経路での検証です。Node版のcloud daemon常駐は未検証です。[READMEの検証範囲](../README.md#実機で確認したこと)を参照してください。
